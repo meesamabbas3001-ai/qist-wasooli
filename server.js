@@ -713,8 +713,8 @@ async function handleOwnerChangePassword(req, res, owner) {
   if (!verifyPassword(b.old_password || '', owner.pass_hash)) {
     return sendJSON(res, 400, { error: 'Purana password ghalat hai' });
   }
-  if (!b.new_password || String(b.new_password).length < 6) {
-    return sendJSON(res, 400, { error: 'Naya password kam az kam 6 harf ka rakhein' });
+  if (!b.new_password || String(b.new_password).length < 4) {
+    return sendJSON(res, 400, { error: 'Naya password kam az kam 4 harf ka rakhein' });
   }
   db.prepare('UPDATE owner SET pass_hash = ? WHERE id = ?').run(hashPassword(b.new_password), owner.id);
   sendJSON(res, 200, { ok: true });
