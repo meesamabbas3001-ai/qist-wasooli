@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ur">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Qist Wasooli — Owner</title>
+<meta name="theme-color" content="#14201a">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- OWNER LOGIN -->
+<div id="login-screen" class="login-wrap">
+  <div class="login-logo">
+    <div class="big">👑</div>
+    <h1>Owner Login</h1>
+    <p>Qist Wasooli — Admin</p>
+  </div>
+  <div class="card">
+    <div class="err" id="login-err"></div>
+    <label class="f">Login ID</label>
+    <input id="login-id" type="text" placeholder="jafran" autocomplete="username">
+    <label class="f">Password</label>
+    <input id="login-pass" type="password" placeholder="••••••" autocomplete="current-password">
+    <button class="btn" id="login-btn">Login Karein</button>
+  </div>
+  <p class="muted" style="text-align:center">Dukaan wale hain? <a href="/">Dukaan login yahan hai</a></p>
+</div>
+
+<!-- OWNER APP -->
+<div id="app" class="hidden">
+  <div class="topbar">
+    <div class="logo">👑</div>
+    <h1>Owner Dashboard</h1>
+    <button id="logout-btn">Logout</button>
+  </div>
+  <div class="wrap">
+    <div class="stat-row">
+      <div class="stat"><div class="num" id="t-shops">0</div><div class="lbl">Kul dukaanain</div></div>
+      <div class="stat"><div class="num" id="t-customers">0</div><div class="lbl">Kul customers</div></div>
+    </div>
+    <div class="stat-row">
+      <div class="stat red"><div class="num" id="t-stuck">Rs. 0</div><div class="lbl">Kul phansa hua paisa</div></div>
+      <div class="stat green"><div class="num" id="t-income">Rs. 0</div><div class="lbl">Mahana fee kamai</div></div>
+    </div>
+
+    <div class="card">
+      <h3>➕ Nayi Dukaan Banaein</h3>
+      <div class="err" id="shop-err"></div>
+      <div class="okmsg" id="shop-ok"></div>
+      <label class="f">Dukaan ka Naam</label>
+      <input id="s-name" type="text" placeholder="Masalan: Ali Mobile Zone">
+      <label class="f">Maalik ka Naam</label>
+      <input id="s-owner" type="text">
+      <label class="f">Mobile Number (yehi login hoga)</label>
+      <input id="s-mobile" type="tel" inputmode="numeric" placeholder="03XX-XXXXXXX">
+      <label class="f">Login Password / PIN</label>
+      <input id="s-pass" type="text" placeholder="Kam az kam 4 harf">
+      <button class="btn" id="shop-btn">Dukaan Banaein</button>
+    </div>
+
+    <h3 style="margin:16px 2px 10px">🏪 Saari Dukaanain</h3>
+    <div id="shops-list"></div>
+
+    <div class="card mt">
+      <h3>⚙️ Settings</h3>
+      <label class="f">Har dukaan ki mahana fee (Rs.)</label>
+      <input id="fee-amount" type="number" inputmode="numeric">
+      <button class="btn dark small mt" id="fee-btn">Fee Save Karein</button>
+      <div class="okmsg" id="fee-ok"></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:18px 0">
+      <h3>🔑 Apna Password Badlein</h3>
+      <div class="err" id="pw-err"></div>
+      <div class="okmsg" id="pw-ok"></div>
+      <label class="f">Purana Password</label>
+      <input id="pw-old" type="password">
+      <label class="f">Naya Password</label>
+      <input id="pw-new" type="password">
+      <button class="btn dark small mt" id="pw-btn">Password Badlein</button>
+      <hr style="border:none;border-top:1px solid var(--line);margin:18px 0">
+      <h3>💾 Backup</h3>
+      <p class="muted">Data roz khud bakhud backup hota hai. Abhi ki copy download karein:</p>
+      <a class="btn ghost small mt" href="/api/owner/backup" style="text-decoration:none;text-align:center">Backup Download Karein</a>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="/owner.js"></script>
+<script>if("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");</script>
+</body>
+</html>

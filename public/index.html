@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ur">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Qist Wasooli — Dukaan</title>
+<meta name="theme-color" content="#14201a">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen" class="login-wrap">
+  <div class="login-logo">
+    <div class="big">🧾</div>
+    <h1>Qist Wasooli</h1>
+    <p>Apni dukaan ka number aur password likhein</p>
+  </div>
+  <div class="card">
+    <div class="err" id="login-err"></div>
+    <label class="f">Mobile Number</label>
+    <input id="login-mobile" type="tel" inputmode="numeric" placeholder="03XX-XXXXXXX" autocomplete="username">
+    <label class="f">Password</label>
+    <input id="login-pass" type="password" placeholder="••••••" autocomplete="current-password">
+    <button class="btn" id="login-btn">Login Karein</button>
+  </div>
+  <p class="muted" style="text-align:center">Owner hain? <a href="/owner">Owner login yahan hai</a></p>
+</div>
+
+<!-- APP -->
+<div id="app" class="hidden">
+  <div class="topbar">
+    <div class="logo">🧾</div>
+    <h1 id="shop-name">Qist Wasooli</h1>
+    <button id="logout-btn">Logout</button>
+  </div>
+
+  <div class="wrap">
+    <!-- HOME: Aaj Ka Kaam -->
+    <section id="view-home">
+      <h2 class="screen-title">📅 Aaj Ka Kaam</h2>
+      <div class="stat-row">
+        <div class="stat green"><div class="num" id="st-today">Rs. 0</div><div class="lbl">Aaj kul aana hai</div></div>
+        <div class="stat red"><div class="num" id="st-late">Rs. 0</div><div class="lbl">Phansa hua (late)</div></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="num" id="st-month-exp">Rs. 0</div><div class="lbl">Is mahine aana tha</div></div>
+        <div class="stat green"><div class="num" id="st-month-got">Rs. 0</div><div class="lbl">Is mahine aa gaya</div></div>
+      </div>
+      <h3 style="margin:14px 2px 10px">Aaj jin ki qist hai</h3>
+      <div id="today-list"></div>
+    </section>
+
+    <!-- LATE LIST -->
+    <section id="view-late" class="hidden">
+      <h2 class="screen-title">⏰ Late List</h2>
+      <p class="muted" style="margin:-6px 2px 12px">Sab se purana late sab se upar · 7+ din = peela · 30+ din = lal</p>
+      <div id="late-list"></div>
+    </section>
+
+    <!-- ADD CUSTOMER -->
+    <section id="view-add" class="hidden">
+      <h2 class="screen-title">➕ Naya Customer</h2>
+      <div class="card">
+        <div class="err" id="add-err"></div>
+        <div class="okmsg" id="add-ok"></div>
+        <label class="f">Customer ka Naam <span class="req">*</span></label>
+        <input id="f-name" type="text" placeholder="Masalan: Muhammad Ali">
+        <label class="f">Mobile Number <span class="req">*</span></label>
+        <input id="f-mobile" type="tel" inputmode="numeric" placeholder="03XX-XXXXXXX">
+        <label class="f">CNIC Number</label>
+        <input id="f-cnic" type="text" inputmode="numeric" placeholder="35202-XXXXXXX-X">
+        <label class="f">Ghar ka Address</label>
+        <input id="f-address" type="text" placeholder="Mohalla, sheher">
+        <label class="f">Guarantor (Zamin) ka Naam</label>
+        <input id="f-gname" type="text">
+        <label class="f">Guarantor ka Mobile</label>
+        <input id="f-gmobile" type="tel" inputmode="numeric">
+        <label class="f">Cheez ka Naam (mobile / TV / bike)</label>
+        <input id="f-item" type="text" placeholder="Masalan: Samsung A15">
+        <label class="f">IMEI / Serial Number</label>
+        <input id="f-imei" type="text">
+        <label class="f">Kul Qeemat (Rs.) <span class="req">*</span></label>
+        <input id="f-price" type="number" inputmode="numeric" placeholder="120000">
+        <label class="f">Advance Mila (Rs.) <span class="req">*</span></label>
+        <input id="f-advance" type="number" inputmode="numeric" placeholder="30000">
+        <label class="f">Qiston ki Tadaad (mahine) <span class="req">*</span></label>
+        <input id="f-months" type="number" inputmode="numeric" placeholder="12">
+        <label class="f">Har Mahine Qist ki Tareekh (1–28) <span class="req">*</span></label>
+        <input id="f-day" type="number" inputmode="numeric" min="1" max="28" placeholder="5">
+        <label class="f">Pehli Qist ka Mahina <span class="req">*</span></label>
+        <input id="f-first" type="month">
+        <button class="btn" id="add-btn">Customer Banaein — Plan Khud Ban Jayega</button>
+      </div>
+    </section>
+
+    <!-- ALL CUSTOMERS -->
+    <section id="view-customers" class="hidden">
+      <h2 class="screen-title">👥 Sab Customers</h2>
+      <div class="searchbox">
+        <input id="search" type="search" placeholder="🔍 Naam ya mobile number likhein...">
+      </div>
+      <div id="cust-list"></div>
+    </section>
+
+    <!-- CUSTOMER FILE -->
+    <section id="view-file" class="hidden">
+      <button class="btn ghost small" id="file-back">← Wapas</button>
+      <h2 class="screen-title" id="file-name" style="margin-top:12px">Customer</h2>
+      <div id="file-body"></div>
+    </section>
+  </div>
+
+  <nav class="bottomnav">
+    <button data-view="home" class="on"><span class="ic">🏠</span>Aaj Ka Kaam</button>
+    <button data-view="late"><span class="ic">⏰</span>Late List</button>
+    <button data-view="add"><span class="ic">➕</span>Naya</button>
+    <button data-view="customers"><span class="ic">👥</span>Customers</button>
+  </nav>
+</div>
+
+<div id="toast"></div>
+<script src="/app.js"></script>
+<script>if("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");</script>
+</body>
+</html>
