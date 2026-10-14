@@ -108,3 +108,11 @@ table.plan th { color: var(--sub); font-weight: 600; }
   display: inline-flex; align-items: center; justify-content: center; font-size: 38px; }
 .login-logo h1 { font-size: 26px; margin-top: 10px; }
 .login-logo p { color: var(--sub); }
+
+/* photo section */
+.photo-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.photo-box { flex: 1; min-width: 130px; }
+.photo-label { font-weight: 600; margin-bottom: 6px; font-size: 14px; }
+.photo-img { width: 100%; height: 150px; object-fit: cover; border-radius: 10px; border: 1px solid #ddd; }
+.nophoto { height: 150px; border: 1.5px dashed #bbb; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #888; font-size: 14px; }
+.photo-btns { margin-top: 6px; display: flex; gap: 6px; }

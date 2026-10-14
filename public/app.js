@@ -37,7 +37,35 @@ async function copyNumber(num, btn) {
   }
 }
 
+function showToast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(() => t.style.display = 'none', 1800);
+}
+
 // ---------------- login
+// photo ko chhota karke bhejo (tez upload, kam data)
+function shrinkImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const max = 900;
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(img.width * scale);
+      cv.height = Math.round(img.height * scale);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      URL.revokeObjectURL(url);
+      resolve(cv.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Photo khul nahi saki')); };
+    img.src = url;
+  });
+}
+
 $('login-btn').onclick = async () => {
   showErr('login-err', '');
   try {
@@ -153,7 +181,7 @@ async function loadCustomers(q) {
     const b = document.createElement('button');
     b.className = 'row-item';
     b.innerHTML = `<span class="grow"><span class="nm">${esc(c.name)}</span><br>
-      <span class="sm">${esc(c.mobile)}${c.item_name ? ' · ' + esc(c.item_name) : ''}</span></span>
+      <span class="sm">${esc(c.mobile)}${c.item_name ? ' · ' + esc(c.item_name) : ''}${c.monthly ? ' · ' + rs(c.monthly) + '/mahina' : ''}</span></span>
       <span class="amt">${c.remaining > 0 ? rs(c.remaining) + ' baqi' : '✅ Clear'}</span>
       <span class="copy-btn" data-copy="${esc(c.mobile)}" style="margin-left:8px">📋</span>`;
     b.querySelector('[data-copy]').onclick = e => { e.stopPropagation(); copyNumber(c.mobile, null); };
@@ -172,6 +200,31 @@ async function openFile(id) {
     : s === 'late' ? '<span class="badge red">Late</span>'
     : s === 'aadhi' ? '<span class="badge yellow">Aadhi</span>'
     : '<span class="badge gray">Baqi</span>';
+  const hb = d.hisaab || { mahanaQist: 0, kulQistein: 0, jamaQistein: 0, baqiQistein: 0, lateQistein: 0, isMahine: [], isMahineBaqi: 0 };
+  const im = hb.isMahine && hb.isMahine[0];
+  const hisaabCard = `
+  <div class="card" style="border:2px solid var(--orange)">
+    <h3 style="margin-bottom:6px">\u{1F4CA} Is Mahinay Ka Hisaab</h3>
+    <div class="kv"><span class="k">Har mahine ki qist</span><span class="v">${rs(hb.mahanaQist)}</span></div>
+    ${im ? `<div class="kv"><span class="k">Is mahine ki qist (${im.due_date})</span><span class="v">${rs(im.amount)} ${statusBadge(im.status)}</span></div>
+    ${im.remaining > 0 ? `<div class="kv"><span class="k">Is mahine lena hai</span><span class="v" style="color:var(--red)">${rs(im.remaining)}</span></div>` : ''}` : '<p class="muted">Is mahine is customer ki koi qist nahi hai</p>'}
+    <div class="kv"><span class="k">Kul qistein</span><span class="v">${hb.kulQistein} \u{2014} Jama ${hb.jamaQistein} \u{00B7} Baqi ${hb.baqiQistein}${hb.lateQistein ? ' \u{00B7} <span style="color:var(--red)">Late ' + hb.lateQistein + '</span>' : ''}</span></div>
+  </div>`;
+  const photoBox = (kind, label) => `
+    <div class="photo-box">
+      <div class="photo-label">${label}</div>
+      ${d.photos && d.photos[kind] ? `<img class="photo-img" src="/api/customers/${c.id}/photo/${kind}?t=${Date.now()}" alt="${label}">` : '<div class="nophoto">Koi photo nahi</div>'}
+      <div class="photo-btns">
+        <label class="mini-btn">${d.photos && d.photos[kind] ? '\u{1F504} Badlein' : '\u{1F4F7} Photo Lagayein'}<input type="file" accept="image/*" hidden data-photoup="${kind}"></label>
+        ${d.photos && d.photos[kind] ? `<button class="mini-btn" data-photodel="${kind}">\u{2715} Hatayein</button>` : ''}
+      </div>
+    </div>`;
+  const photoCard = `
+  <div class="card">
+    <h3 style="margin-bottom:8px">\u{1F4F7} Photo</h3>
+    <div class="photo-row">${photoBox('customer', 'Customer ki Photo')}${photoBox('item', 'Cheez ki Photo')}</div>
+    <p class="muted mt">Photo se customer aur cheez pehchanna asaan rehta hai.</p>
+  </div>`;
   let html = `
   <div class="card">
     <div class="kv"><span class="k">Mobile</span><span class="v">${esc(c.mobile)}<button class="mini-btn copy" data-copyfile="${esc(c.mobile)}">📋 Copy</button><a class="mini-btn call" href="tel:${esc(c.mobile)}">📞 Call</a></span></div>
@@ -185,6 +238,7 @@ async function openFile(id) {
     ${c.cnic ? `<div class="kv"><span class="k">CNIC</span><span class="v">${esc(c.cnic)}</span></div>` : ''}
     ${c.address ? `<div class="kv"><span class="k">Address</span><span class="v">${esc(c.address)}</span></div>` : ''}
   </div>
+  ${hisaabCard}
   <div class="card">
     <h3 style="margin-bottom:6px">💰 Qist Jama Karein</h3>
     <div class="err" id="pay-err"></div>
@@ -199,6 +253,7 @@ async function openFile(id) {
     ${d.installments.map(i => `<tr><td>${i.seq}</td><td>${i.due_date}</td><td>${rs(i.amount)}</td><td>${rs(i.paid)}</td><td>${statusBadge(i.status)}</td></tr>`).join('')}
     </table>
   </div>
+  ${photoCard}
   <div class="card">
     <h3 style="margin-bottom:8px">🧾 Payment History</h3>
     ${d.payments.length ? d.payments.map(p => `
@@ -212,6 +267,25 @@ async function openFile(id) {
 
   document.querySelectorAll('[data-copyfile]').forEach(b =>
     b.onclick = () => copyNumber(b.dataset.copyfile, b));
+
+  document.querySelectorAll('[data-photoup]').forEach(inp => inp.onchange = async () => {
+    const file = inp.files[0];
+    if (!file) return;
+    try {
+      const dataUrl = await shrinkImage(file);
+      await api(`/api/customers/${id}/photo`, { method: 'POST',
+        body: JSON.stringify({ kind: inp.dataset.photoup, image: dataUrl }) });
+      showToast('Photo lag gayi \u{2705}');
+      openFile(id);
+    } catch (e) { alert(e.message); }
+  });
+  document.querySelectorAll('[data-photodel]').forEach(b => b.onclick = async () => {
+    if (!confirm('Ye photo hata dein?')) return;
+    try {
+      await api(`/api/customers/${id}/photo/${b.dataset.photodel}`, { method: 'DELETE' });
+      openFile(id);
+    } catch (e) { alert(e.message); }
+  });
 
   $('pay-btn').onclick = async () => {
     showErr('pay-err', '');

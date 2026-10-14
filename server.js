@@ -117,6 +117,12 @@ db.exec(`
     installment_id INTEGER NOT NULL REFERENCES installments(id),
     amount INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    shop_id INTEGER NOT NULL, customer_id INTEGER NOT NULL,
+    kind TEXT NOT NULL, data BLOB NOT NULL, created_at TEXT NOT NULL,
+    UNIQUE(customer_id, kind)
+  );
   CREATE INDEX IF NOT EXISTS idx_cust_shop ON customers(shop_id);
   CREATE INDEX IF NOT EXISTS idx_inst_cust ON installments(customer_id);
   CREATE INDEX IF NOT EXISTS idx_inst_shop_due ON installments(shop_id, due_date);
@@ -137,6 +143,155 @@ db.exec(`
   }
 }
 
+
+// ---------------------------------------------------------------- PDF (bina library ke — asal khulne wali PDF)
+const fmt = n => 'Rs ' + Number(n || 0).toLocaleString('en-US');
+
+function escPdfText(s) {
+  return String(s == null ? '' : s)
+    .replace(/[\u2014\u2013]/g, '-').replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+
+function makePdf(lines) {
+  const W = 595, H = 842, M = 46;
+  const pages = [];
+  let cur = [], y = H - 52;
+  for (const ln of lines) {
+    const size = ln.s || 11;
+    if (y - size * 1.35 < 48 && cur.length) { pages.push(cur); cur = []; y = H - 52; }
+    y -= size * 1.35;
+    cur.push({ t: escPdfText(ln.t), s: size, b: !!ln.b, y: Math.round(y) });
+    y -= (ln.sp == null ? 5 : ln.sp);
+  }
+  if (cur.length || !pages.length) pages.push(cur);
+  const objs = [];
+  objs[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+  objs[3] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
+  objs[4] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>';
+  const kids = [];
+  pages.forEach((pageLines, i) => {
+    const pageId = 5 + i * 2, contId = 6 + i * 2;
+    kids.push(`${pageId} 0 R`);
+    const content = pageLines.map(l =>
+      `BT /${l.b ? 'F2' : 'F1'} ${l.s} Tf ${M} ${l.y} Td (${l.t}) Tj ET`).join('\n');
+    objs[pageId] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${contId} 0 R >>`;
+    objs[contId] = `<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}\nendstream`;
+  });
+  objs[2] = `<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${pages.length} >>`;
+  let out = '%PDF-1.4\n';
+  const offsets = [0];
+  for (let i = 1; i < objs.length; i++) {
+    if (!objs[i]) continue;
+    offsets[i] = Buffer.byteLength(out, 'latin1');
+    out += `${i} 0 obj\n${objs[i]}\nendobj\n`;
+  }
+  const xrefPos = Buffer.byteLength(out, 'latin1');
+  const n = objs.length;
+  out += `xref\n0 ${n}\n0000000000 65535 f \n`;
+  for (let i = 1; i < n; i++) out += `${String(offsets[i] || 0).padStart(10, '0')} 00000 n \n`;
+  out += `trailer\n<< /Size ${n} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF`;
+  return Buffer.from(out, 'latin1');
+}
+
+function shopPdfLines(shop) {
+  const today = todayStr();
+  const custs = db.prepare('SELECT * FROM customers WHERE shop_id = ? ORDER BY name').all(shop.id);
+  let kulHisaab = 0, kulJama = 0;
+  const body = [];
+  custs.forEach((c, idx) => {
+    const t = customerTotals(c.id);
+    kulHisaab += t.total; kulJama += t.paid;
+    const paidMap = installmentPaidMap(c.id);
+    const insts = db.prepare('SELECT * FROM installments WHERE customer_id = ? ORDER BY seq').all(c.id);
+    let jama = 0, late = 0, lateAmt = 0;
+    for (const i of insts) {
+      const paid = paidMap.get(i.id) || 0;
+      if (paid >= i.amount) jama++;
+      else if (i.due_date < today) { late++; lateAmt += i.amount - paid; }
+    }
+    const monthly = insts.length > 1 ? insts[1].amount : (insts[0] ? insts[0].amount : 0);
+    body.push({ t: `${idx + 1}. ${c.name}  -  ${c.mobile}`, s: 12, b: true, sp: 2 });
+    body.push({ t: `Cheez: ${c.item_name || '-'}    Kul qeemat: ${fmt(c.total_price)}    Advance: ${fmt(c.advance)}`, sp: 2 });
+    body.push({ t: `Har mahine ki qist: ${fmt(monthly)} x ${c.months} mahine   |   Jama ho gaya: ${fmt(t.paid)}   |   Baqaya: ${fmt(t.remaining)}`, sp: 2 });
+    body.push({ t: `Qistein: ${jama} jama, ${insts.length - jama} baqi${late ? `   |   Late: ${late} (${fmt(lateAmt)})` : ''}${c.cnic ? `   |   CNIC: ${c.cnic}` : ''}`, sp: 10 });
+  });
+  return [
+    { t: 'Qist Wasooli - Poora Data', s: 18, b: true, sp: 4 },
+    { t: `Dukaan: ${shop.name}  (Maalik: ${shop.owner_name})`, s: 12, b: true, sp: 2 },
+    { t: `Mobile: ${shop.mobile}     Tareekh: ${today}`, sp: 10 },
+    { t: `Kul customers: ${custs.length}   |   Kul hisaab: ${fmt(kulHisaab)}   |   Jama: ${fmt(kulJama)}   |   Baqaya: ${fmt(kulHisaab - kulJama)}`, b: true, sp: 12 },
+    { t: 'HAR CUSTOMER KA HISAB', s: 13, b: true, sp: 8 },
+    ...(body.length ? body : [{ t: 'Abhi koi customer nahi hai.' }]),
+    { t: 'Ye PDF Qist Wasooli app se khud bani hai - record ke liye mehfooz rakhein.', s: 9, sp: 2 },
+  ];
+}
+
+function ownerPdfLines() {
+  const today = todayStr();
+  const fee = Number(db.prepare("SELECT value FROM settings WHERE key='fee_amount'").get().value);
+  const shops = db.prepare('SELECT * FROM shops ORDER BY name').all();
+  const active = shops.filter(s => s.active).length;
+  const custCount = db.prepare('SELECT COUNT(*) AS c FROM customers').get().c;
+  let stuck = 0;
+  const body = [];
+  shops.forEach((s, idx) => {
+    const st = shopStats(s.id);
+    stuck += st.stuck;
+    body.push({ t: `${idx + 1}. ${s.name}  -  Maalik: ${s.owner_name}  -  ${s.mobile}`, s: 12, b: true, sp: 2 });
+    body.push({ t: `Halat: ${s.active ? 'Active' : 'Band'}   |   Fee ki agli tareekh: ${s.fee_due_date}   |   Fee: ${fmt(fee)}/mahina`, sp: 2 });
+    body.push({ t: `Customers: ${st.customers}   |   Jama hua (is dukaan par): ${fmt(st.collected)}   |   Phansa hua (late): ${fmt(st.stuck)}`, sp: 10 });
+  });
+  return [
+    { t: 'Qist Wasooli - Owner Report', s: 18, b: true, sp: 4 },
+    { t: `Tareekh: ${today}`, sp: 10 },
+    { t: `Kul dukaanein: ${shops.length} (Active: ${active})   |   Kul customers: ${custCount}`, b: true, sp: 2 },
+    { t: `Phansa hua kul: ${fmt(stuck)}   |   Mahana fee aamdani: ${fmt(active * fee)}`, b: true, sp: 12 },
+    { t: 'HAR DUKAAN KA HISAB', s: 13, b: true, sp: 8 },
+    ...(body.length ? body : [{ t: 'Abhi koi dukaan nahi hai.' }]),
+    { t: 'Ye PDF Qist Wasooli app se khud bani hai - record ke liye mehfooz rakhein.', s: 9, sp: 2 },
+  ];
+}
+
+function sendPdf(res, lines, filename) {
+  const buf = makePdf(lines);
+  res.writeHead(200, { 'Content-Type': 'application/pdf',
+    'Content-Disposition': `attachment; filename="${filename}"`, 'Content-Length': buf.length });
+  res.end(buf);
+}
+function handleShopPdf(req, res, shop) { sendPdf(res, shopPdfLines(shop), `qist-data-${todayStr()}.pdf`); }
+
+// ---------------------------------------------------------------- customer photo
+function findOwnCustomer(shop, id) {
+  return db.prepare('SELECT * FROM customers WHERE id = ? AND shop_id = ?').get(id, shop.id);
+}
+async function handlePhotoPost(req, res, shop, id) {
+  if (!findOwnCustomer(shop, id)) return sendJSON(res, 404, { error: 'Customer nahi mila' });
+  const b = await readBody(req);
+  const kind = b.kind === 'item' ? 'item' : 'customer';
+  const m = String(b.image || '').match(/^data:image\/(jpeg|png);base64,(.+)$/);
+  if (!m) return sendJSON(res, 400, { error: 'Photo sahi bhejein' });
+  const buf = Buffer.from(m[2], 'base64');
+  if (!buf.length || buf.length > 2 * 1024 * 1024) return sendJSON(res, 400, { error: 'Photo bohat bari hai' });
+  db.prepare(`INSERT INTO photos(shop_id, customer_id, kind, data, created_at) VALUES(?,?,?,?,?)
+              ON CONFLICT(customer_id, kind) DO UPDATE SET data = excluded.data, created_at = excluded.created_at`)
+    .run(shop.id, id, kind, buf, todayStr());
+  sendJSON(res, 200, { ok: true });
+}
+function handlePhotoGet(req, res, shop, id, kind) {
+  if (!findOwnCustomer(shop, id)) return sendJSON(res, 404, { error: 'Customer nahi mila' });
+  const ph = db.prepare('SELECT data FROM photos WHERE customer_id = ? AND kind = ?').get(id, kind);
+  if (!ph) return sendJSON(res, 404, { error: 'Photo nahi hai' });
+  res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=120' });
+  res.end(Buffer.from(ph.data));
+}
+function handlePhotoDelete(req, res, shop, id, kind) {
+  if (!findOwnCustomer(shop, id)) return sendJSON(res, 404, { error: 'Customer nahi mila' });
+  db.prepare('DELETE FROM photos WHERE customer_id = ? AND kind = ?').run(id, kind);
+  sendJSON(res, 200, { ok: true });
+}
+
 // ---------------------------------------------------------------- backup (roz khud bakhud)
 function makeBackup() {
   try {
@@ -150,6 +305,18 @@ function makeBackup() {
     while (files.length > 14) {
       fs.unlinkSync(path.join(BACKUP_DIR, files.shift()));
     }
+    // har dukaan ka PDF bhi bana kar rakho (app ko kuch ho jaye to parhne wala record maujood rahe)
+    try {
+      const pdir = path.join(BACKUP_DIR, `pdf-${stamp}`);
+      if (!fs.existsSync(pdir)) {
+        fs.mkdirSync(pdir, { recursive: true });
+        for (const s of db.prepare('SELECT * FROM shops').all()) {
+          fs.writeFileSync(path.join(pdir, `shop-${s.id}.pdf`), makePdf(shopPdfLines(s)));
+        }
+      }
+      const dirs = fs.readdirSync(BACKUP_DIR).filter(f => f.startsWith('pdf-')).sort();
+      while (dirs.length > 14) fs.rmSync(path.join(BACKUP_DIR, dirs.shift()), { recursive: true, force: true });
+    } catch (e) { console.error('PDF backup error:', e.message); }
   } catch (e) { console.error('Backup error:', e.message); }
 }
 makeBackup();
@@ -190,7 +357,7 @@ function sendJSON(res, code, obj) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', c => { data += c; if (data.length > 1e6) req.destroy(); });
+    req.on('data', c => { data += c; if (data.length > 4e6) req.destroy(); });
     req.on('end', () => {
       try { resolve(data ? JSON.parse(data) : {}); }
       catch { reject(new Error('JSON ghalat hai')); }
@@ -382,8 +549,11 @@ function handleCustomers(req, res, shop, url) {
   }
   const list = rows.map(c => {
     const t = customerTotals(c.id);
+    const m2 = db.prepare('SELECT amount FROM installments WHERE customer_id = ? AND seq = 2').get(c.id);
+    const m1 = m2 ? null : db.prepare('SELECT amount FROM installments WHERE customer_id = ? AND seq = 1').get(c.id);
     return { id: c.id, name: c.name, mobile: c.mobile, item_name: c.item_name,
-             total_price: c.total_price, remaining: t.remaining, paid: t.paid };
+             total_price: c.total_price, remaining: t.remaining, paid: t.paid,
+             monthly: m2 ? m2.amount : (m1 ? m1.amount : 0) };
   });
   sendJSON(res, 200, { list });
 }
@@ -405,7 +575,22 @@ function handleCustomerFile(req, res, shop, id) {
     });
   const payments = db.prepare('SELECT * FROM payments WHERE customer_id = ? ORDER BY id DESC').all(id);
   const t = customerTotals(id);
-  sendJSON(res, 200, { customer: c, installments: inst, payments,
+  const ym = today.slice(0, 7);
+  const thisMonth = inst.filter(i => i.due_date.slice(0, 7) === ym);
+  const hisaab = {
+    mahanaQist: inst.length > 1 ? inst[1].amount : (inst[0] ? inst[0].amount : 0),
+    kulQistein: inst.length,
+    jamaQistein: inst.filter(i => i.status === 'jama').length,
+    baqiQistein: inst.filter(i => i.status !== 'jama').length,
+    lateQistein: inst.filter(i => i.status === 'late').length,
+    isMahine: thisMonth.map(i => ({ seq: i.seq, due_date: i.due_date, amount: i.amount,
+                                    paid: i.paid, remaining: i.remaining, status: i.status })),
+    isMahineBaqi: thisMonth.reduce((s, i) => s + i.remaining, 0),
+  };
+  const photoRows = db.prepare('SELECT kind FROM photos WHERE customer_id = ?').all(id);
+  const photos = { customer: photoRows.some(r => r.kind === 'customer'),
+                   item: photoRows.some(r => r.kind === 'item') };
+  sendJSON(res, 200, { customer: c, installments: inst, payments, hisaab, photos,
                        totals: { plan: t.total, paid: t.paid, remaining: t.remaining } });
 }
 
@@ -535,6 +720,9 @@ async function handleOwnerChangePassword(req, res, owner) {
   sendJSON(res, 200, { ok: true });
 }
 function handleOwnerBackup(req, res) {
+  sendPdf(res, ownerPdfLines(), `qist-owner-report-${todayStr()}.pdf`);
+}
+function handleOwnerBackupDb(req, res) {
   const stamp = todayStr();
   const dest = path.join(BACKUP_DIR, `qist-${stamp}.db`);
   if (!fs.existsSync(dest)) db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
@@ -601,6 +789,12 @@ const handler = async (req, res) => {
       if (payMatch && m === 'POST') return await handleAddPayment(req, res, shop, Number(payMatch[1]));
       const delMatch = p.match(/^\/api\/payments\/(\d+)$/);
       if (delMatch && m === 'DELETE') return handleDeletePayment(req, res, shop, Number(delMatch[1]));
+      if (p === '/api/export/pdf' && m === 'GET') return handleShopPdf(req, res, shop);
+      const photoMatch = p.match(/^\/api\/customers\/(\d+)\/photo\/(customer|item)$/);
+      if (photoMatch && m === 'GET') return handlePhotoGet(req, res, shop, Number(photoMatch[1]), photoMatch[2]);
+      if (photoMatch && m === 'DELETE') return handlePhotoDelete(req, res, shop, Number(photoMatch[1]), photoMatch[2]);
+      const photoPost = p.match(/^\/api\/customers\/(\d+)\/photo$/);
+      if (photoPost && m === 'POST') return await handlePhotoPost(req, res, shop, Number(photoPost[1]));
       return sendJSON(res, 404, { error: 'Route nahi mila' });
     }
 
@@ -614,6 +808,7 @@ const handler = async (req, res) => {
       if (p === '/api/owner/settings' && m === 'POST') return await handleOwnerSettings(req, res);
       if (p === '/api/owner/change-password' && m === 'POST') return await handleOwnerChangePassword(req, res, owner);
       if (p === '/api/owner/backup' && m === 'GET') return handleOwnerBackup(req, res);
+      if (p === '/api/owner/backup-db' && m === 'GET') return handleOwnerBackupDb(req, res);
       const feeMatch = p.match(/^\/api\/owner\/shops\/(\d+)\/fee-paid$/);
       if (feeMatch && m === 'POST') return handleOwnerFeePaid(req, res, Number(feeMatch[1]));
       const togMatch = p.match(/^\/api\/owner\/shops\/(\d+)\/toggle$/);

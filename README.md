@@ -118,3 +118,11 @@ data/qist.db         — database (khud banti hai)
 data/backups/        — roz ke backup
 tests/run-tests.js   — 14 teston ki report
 ```
+
+## 8. PDF, Hisaab aur Photo (naye features)
+
+- **Dukaan ka PDF:** Dukaan dar jab chahe "Poora Data PDF" button se apne saaray customers ka hisaab ek PDF me download kar sakta hai — phone par khul jati hai.
+- **Owner ki PDF report:** Owner dashboard se "PDF Report" download hoti hai (saari dukaanon ka hisaab). Purani .db wali file ab "Backup File (.db)" ke naam se alag hai — wo sirf technical kaam ke liye hai.
+- **Khud bakhud PDF:** Roz ke backup ke sath har dukaan ka PDF bhi `data/backups/pdf-<tareekh>/` me khud ban jata hai — app ko kuch ho jaye to parhne wala record mehfooz rehta hai.
+- **Har customer ka saaf hisaab:** Customer File me "Is Mahinay Ka Hisaab" wala card har customer ka alag hisaab dikhata hai — har mahine ki qist kitni hai, is mahine ki qist mili ya nahi, kul kitni qistein baqi hain.
+- **Photo:** Customer File me customer ki photo aur cheez (item) ki photo lagayi ja sakti hai, badli aur hatayi bhi ja sakti hai. Photo sirf usi dukaan ko dikhti hai jis ka customer hai.

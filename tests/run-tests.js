@@ -189,8 +189,52 @@ const ym = offset => {
     h.lateCount === 1 && h.lateAmount === 30000 && h.monthCollected === 7500 && h.todayTotal === 0,
     `late=${h.lateCount}/${h.lateAmount}, collected=${h.monthCollected}, today=${h.todayTotal}`);
 
+  // --- Test 15: dukaan ka poora data PDF (asal khulne wali PDF)
+  let raw = await fetch(BASE + '/api/export/pdf', { headers: { Cookie: jar.shopA } });
+  let buf = Buffer.from(await raw.arrayBuffer());
+  check(15, 'Dukaan ka PDF — asal PDF file banti hai jo khul sakti hai',
+    raw.status === 200 && buf.slice(0, 5).toString() === '%PDF-' && buf.length > 800,
+    `${buf.length} bytes`);
+
+  // --- Test 16: owner ki PDF report (purana .db wala masla khatam) + machine backup alag
+  raw = await fetch(BASE + '/api/owner/backup', { headers: { Cookie: jar.owner } });
+  buf = Buffer.from(await raw.arrayBuffer());
+  const ownerPdfOk = raw.status === 200 && buf.slice(0, 5).toString() === '%PDF-';
+  raw = await fetch(BASE + '/api/owner/backup-db', { headers: { Cookie: jar.owner } });
+  const dbBuf = Buffer.from(await raw.arrayBuffer());
+  check(16, 'Owner download — PDF report khulti hai, .db machine backup bhi maujood',
+    ownerPdfOk && raw.status === 200 && dbBuf.slice(0, 6).toString() === 'SQLite',
+    `pdf theek=${ownerPdfOk}, db=${dbBuf.length} bytes`);
+
+  // --- Test 17: har customer ka saaf hisaab (is mahine ki qist)
+  r = await call('POST', '/api/customers', { name: 'Hisaab Wala', mobile: '03009998877', item_name: 'Mobile',
+    total_price: 60000, advance: 0, months: 6, qist_day: 10, first_month: ym(0) }, 'shopA');
+  const hid = r.data.customerId;
+  r = await call('GET', '/api/customers/' + hid, null, 'shopA');
+  const hb = r.data.hisaab || {};
+  check(17, 'Har customer ka alag hisaab — mahana qist 10000, kul 6 qistein, is mahine ki qist maujood',
+    hb.mahanaQist === 10000 && hb.kulQistein === 6 && hb.baqiQistein === 6 &&
+    Array.isArray(hb.isMahine) && hb.isMahine.length === 1 && hb.isMahine[0].amount === 10000,
+    `mahana=${hb.mahanaQist}, kul=${hb.kulQistein}, isMahine=${(hb.isMahine || []).length}`);
+
+  // --- Test 18: photo upload / dekhna / hatana + doosri dukaan ki dastras nahi
+  const tinyJpeg = 'data:image/jpeg;base64,' +
+    Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0, 16, 0x4A, 0x46]).toString('base64');
+  r = await call('POST', `/api/customers/${hid}/photo`, { kind: 'customer', image: tinyJpeg }, 'shopA');
+  const upOk = r.status === 200 && r.data.ok === true;
+  raw = await fetch(BASE + `/api/customers/${hid}/photo/customer`, { headers: { Cookie: jar.shopA } });
+  const phBuf = Buffer.from(await raw.arrayBuffer());
+  const getOk = raw.status === 200 && phBuf[0] === 0xFF && phBuf[1] === 0xD8;
+  raw = await fetch(BASE + `/api/customers/${hid}/photo/customer`, { headers: { Cookie: jar.shopB } });
+  const isoOk = raw.status === 404;
+  r = await call('DELETE', `/api/customers/${hid}/photo/customer`, null, 'shopA');
+  raw = await fetch(BASE + `/api/customers/${hid}/photo/customer`, { headers: { Cookie: jar.shopA } });
+  check(18, 'Photo — lagti hai, dikhti hai, doosri dukaan ko nahi milti, hat ti hai',
+    upOk && getOk && isoOk && raw.status === 404,
+    `upload=${upOk}, get=${getOk}, isolation=${isoOk}, delete ke baad=${raw.status}`);
+
   const passed = results.filter(x => x.pass).length;
-  console.log(`\n===== NATIJA: ${passed}/${results.length} checks pass (14 brief tests + home-screen extra) =====`);
+  console.log(`\n===== NATIJA: ${passed}/${results.length} checks pass (14 brief tests + extras) =====`);
   server.kill();
   process.exit(passed === results.length ? 0 : 1);
 })().catch(e => { console.error('Test fail ho gaya:', e); server.kill(); process.exit(1); });

@@ -1,5 +1,5 @@
 /* Qist Wasooli service worker — shell pehle se rakho, data hamesha taaza lo */
-const CACHE = 'qw-v1';
+const CACHE = 'qw-v2';
 const SHELL = ['/', '/index.html', '/owner.html', '/style.css', '/app.js', '/owner.js',
   '/manifest.json', '/icon.svg'];
 
