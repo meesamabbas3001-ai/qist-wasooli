@@ -1,0 +1,9 @@
+{
+  "name": "qist-wasooli",
+  "version": "1.0.0",
+  "description": "Installment (qist) recovery web app for shops — zero dependencies",
+  "main": "server.js",
+  "scripts": { "start": "node server.js", "test": "node tests/run-tests.js" },
+  "engines": { "node": "24.x" },
+  "private": true
+}
