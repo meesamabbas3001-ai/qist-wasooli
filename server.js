@@ -804,6 +804,22 @@ async function handleOwnerAddShop(req, res) {
     .run(name, ownerName, mobile, hashPassword(password), feeDue, todayStr());
   sendJSON(res, 200, { ok: true, shopId: info.lastInsertRowid, fee_due_date: feeDue });
 }
+async function handleOwnerDeleteShop(req, res, shopId) {
+  const shop = await db.prepare('SELECT * FROM shops WHERE id = ?').get(shopId);
+  if (!shop) return sendJSON(res, 404, { error: 'Dukaan nahi mili' });
+  await db.exec('BEGIN');
+  try {
+    await db.prepare('DELETE FROM allocations WHERE payment_id IN (SELECT id FROM payments WHERE shop_id = ?)').run(shopId);
+    await db.prepare('DELETE FROM allocations WHERE installment_id IN (SELECT id FROM installments WHERE shop_id = ?)').run(shopId);
+    await db.prepare('DELETE FROM payments WHERE shop_id = ?').run(shopId);
+    await db.prepare('DELETE FROM installments WHERE shop_id = ?').run(shopId);
+    await db.prepare('DELETE FROM photos WHERE shop_id = ?').run(shopId);
+    await db.prepare('DELETE FROM customers WHERE shop_id = ?').run(shopId);
+    await db.prepare('DELETE FROM shops WHERE id = ?').run(shopId);
+    await db.exec('COMMIT');
+  } catch (e) { await db.exec('ROLLBACK'); throw e; }
+  sendJSON(res, 200, { ok: true });
+}
 async function handleOwnerFeePaid(req, res, shopId) {
   const shop = await db.prepare('SELECT * FROM shops WHERE id = ?').get(shopId);
   if (!shop) return sendJSON(res, 404, { error: 'Dukaan nahi mili' });
@@ -948,6 +964,8 @@ const routeRequest = async (req, res) => {
       if (p === '/api/owner/change-password' && m === 'POST') return await handleOwnerChangePassword(req, res, owner);
       if (p === '/api/owner/backup' && m === 'GET') return await handleOwnerBackup(req, res);
       if (p === '/api/owner/backup-db' && m === 'GET') return await handleOwnerBackupDb(req, res);
+      const delShopMatch = p.match(/^\/api\/owner\/shops\/(\d+)$/);
+      if (delShopMatch && m === 'DELETE') return await handleOwnerDeleteShop(req, res, Number(delShopMatch[1]));
       const feeMatch = p.match(/^\/api\/owner\/shops\/(\d+)\/fee-paid$/);
       if (feeMatch && m === 'POST') return await handleOwnerFeePaid(req, res, Number(feeMatch[1]));
       const togMatch = p.match(/^\/api\/owner\/shops\/(\d+)\/toggle$/);
