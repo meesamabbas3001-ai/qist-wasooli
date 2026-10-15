@@ -368,9 +368,12 @@ async function handlePhotoPost(req, res, shop, id) {
   if (!m) return sendJSON(res, 400, { error: 'Photo sahi bhejein' });
   const buf = Buffer.from(m[2], 'base64');
   if (!buf.length || buf.length > 2 * 1024 * 1024) return sendJSON(res, 400, { error: 'Photo bohat bari hai' });
+  // Hosted (Turso) mode me photo base64 text ban kar jati hai — wapas ate
+  // waqt db.js use khud asal bytes me badal deta hai. Local par seedha BLOB.
+  const dataVal = db.isLocal ? buf : buf.toString('base64');
   await db.prepare(`INSERT INTO photos(shop_id, customer_id, kind, data, created_at) VALUES(?,?,?,?,?)
               ON CONFLICT(customer_id, kind) DO UPDATE SET data = excluded.data, created_at = excluded.created_at`)
-    .run(shop.id, id, kind, buf, todayStr());
+    .run(shop.id, id, kind, dataVal, todayStr());
   sendJSON(res, 200, { ok: true });
 }
 async function handlePhotoGet(req, res, shop, id, kind) {
@@ -378,7 +381,7 @@ async function handlePhotoGet(req, res, shop, id, kind) {
   const ph = await db.prepare('SELECT data FROM photos WHERE customer_id = ? AND kind = ?').get(id, kind);
   if (!ph) return sendJSON(res, 404, { error: 'Photo nahi hai' });
   res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=120' });
-  res.end(Buffer.from(ph.data));
+  res.end(Buffer.isBuffer(ph.data) ? ph.data : Buffer.from(String(ph.data), 'base64'));
 }
 async function handlePhotoDelete(req, res, shop, id, kind) {
   if (!await findOwnCustomer(shop, id)) return sendJSON(res, 404, { error: 'Customer nahi mila' });
