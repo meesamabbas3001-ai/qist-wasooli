@@ -148,7 +148,19 @@ db.exec(`
 // ban jati hai taake landing page wala demo login hamesha chale. Asal client
 // server par ye NAHI banti (wahan sirf asal dukaanain hoti hain).
 if (process.env.VERCEL === '1' || process.env.QW_DEMO_SEED === '1') {
-  const DEMO_MOBILE = '03289507102';
+  const DEMO_MOBILE = '03123456789';
+  const DEMO_PASS = '123';
+  // Purani demo dukaan (personal number wali) ho to usay saaf kar do —
+  // personal number public demo login par nahi hona chahiye.
+  const oldDemo = db.prepare('SELECT id FROM shops WHERE mobile = ?').get('03289507102');
+  if (oldDemo) {
+    db.prepare('DELETE FROM allocations WHERE payment_id IN (SELECT id FROM payments WHERE shop_id = ?)').run(oldDemo.id);
+    db.prepare('DELETE FROM payments WHERE shop_id = ?').run(oldDemo.id);
+    db.prepare('DELETE FROM installments WHERE shop_id = ?').run(oldDemo.id);
+    db.prepare('DELETE FROM photos WHERE shop_id = ?').run(oldDemo.id);
+    db.prepare('DELETE FROM customers WHERE shop_id = ?').run(oldDemo.id);
+    db.prepare('DELETE FROM shops WHERE id = ?').run(oldDemo.id);
+  }
   const demoRow = db.prepare('SELECT id FROM shops WHERE mobile = ?').get(DEMO_MOBILE);
   if (!demoRow) {
     const now = new Date();
@@ -157,7 +169,7 @@ if (process.env.VERCEL === '1' || process.env.QW_DEMO_SEED === '1') {
     const ym = d => iso(d).slice(0, 7);
     const day = Math.min(now.getDate(), 28);
     const shopId = db.prepare('INSERT INTO shops(name, owner_name, mobile, pass_hash, fee_due_date, active, created_at) VALUES (?,?,?,?,?,1,?)')
-      .run('Messam Mobile Zone (Demo)', 'Messam Abbas', DEMO_MOBILE, hashPassword('1234'), iso(addM(now, 12)), iso(now)).lastInsertRowid;
+      .run('Messam Mobile Zone (Demo)', 'Messam Abbas', DEMO_MOBILE, hashPassword(DEMO_PASS), iso(addM(now, 12)), iso(now)).lastInsertRowid;
     const insCust = db.prepare(`INSERT INTO customers(shop_id, name, mobile, cnic, address, guarantor_name,
       guarantor_mobile, item_name, imei, total_price, advance, months, qist_day,
       first_month, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
@@ -190,7 +202,7 @@ if (process.env.VERCEL === '1' || process.env.QW_DEMO_SEED === '1') {
     addDemoCustomer({ name: 'Bilal Ahmed', mobile: '03004440004', item: 'iPhone 12', imei: '359876543210123', gname: 'Shahid Iqbal', gmobile: '03004440009', total: 150000, advance: 30000, months: 8 },
       -2, [{ amount: 15000, date: iso(addM(now, -2)) }, { amount: 5000, date: iso(addM(now, -1)) }]);
     addDemoCustomer({ name: 'Sana Tariq', mobile: '03007770007', item: 'Infinix Note 40', total: 48000, advance: 8000, months: 5 }, -1, []);
-    console.log('[Qist Wasooli] Demo dukaan tayyar: ' + DEMO_MOBILE + ' / 1234');
+    console.log('[Qist Wasooli] Demo dukaan tayyar: ' + DEMO_MOBILE + ' / ' + DEMO_PASS);
   }
 }
 
