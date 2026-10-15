@@ -10,7 +10,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { DatabaseSync } = require('node:sqlite');
+const { createDb } = require('./db');
 
 // ---------------------------------------------------------------- config
 const PORT = process.env.PORT || 3000;
@@ -26,7 +26,9 @@ fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
 // Session signing secret (pehli baar banta hai, phir wahi rehta hai)
 let SECRET;
-if (fs.existsSync(SECRET_PATH)) {
+if (process.env.QW_SECRET) {
+  SECRET = process.env.QW_SECRET;
+} else if (fs.existsSync(SECRET_PATH)) {
   SECRET = fs.readFileSync(SECRET_PATH, 'utf8').trim();
 } else {
   SECRET = crypto.randomBytes(32).toString('hex');
@@ -77,8 +79,8 @@ function verifyPassword(pw, stored) {
 }
 
 // ---------------------------------------------------------------- database
-const db = new DatabaseSync(DB_PATH);
-db.exec(`
+const db = createDb(DB_PATH);
+const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY, value TEXT NOT NULL
   );
@@ -128,84 +130,100 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_inst_shop_due ON installments(shop_id, due_date);
   CREATE INDEX IF NOT EXISTS idx_pay_cust ON payments(customer_id);
   CREATE INDEX IF NOT EXISTS idx_alloc_inst ON allocations(installment_id);
-`);
+`;
 
-// Default settings + owner seed
-{
-  const setFee = db.prepare('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)');
-  setFee.run('fee_amount', '6999');
-  const ownerRow = db.prepare('SELECT id FROM owner LIMIT 1').get();
-  if (!ownerRow) {
-    const starter = process.env.QW_OWNER_PASSWORD || 'QistOwner#2026';
-    db.prepare('INSERT INTO owner(login, pass_hash, name) VALUES (?, ?, ?)')
-      .run('jafran', hashPassword(starter), 'Jafran (Owner)');
-    console.log('[Qist Wasooli] Owner account ban gaya. Login: jafran (password README me hai — pehle login par badal lein)');
-  }
-}
+// ==== INIT-DB START ====
+// Database tayyar karna: schema + zaroori seeds. Pehli request par chalta
+// hai, phir dobara nahi. Local file ho ya Turso — yehi ek rasta hai.
+let initPromise = null;
+function initDb() {
+  if (initPromise) return initPromise;
+  initPromise = (async () => {
+    await db.exec(SCHEMA_SQL);
 
-// Demo dukaan seed — SIRF Vercel demo par (VERCEL env) ya QW_DEMO_SEED=1 par.
-// Vercel par data reset hota rehta hai, is liye demo dukaan har start par khud
-// ban jati hai taake landing page wala demo login hamesha chale. Asal client
-// server par ye NAHI banti (wahan sirf asal dukaanain hoti hain).
-if (process.env.VERCEL === '1' || process.env.QW_DEMO_SEED === '1') {
-  const DEMO_MOBILE = '03123456789';
-  const DEMO_PASS = '123';
-  // Purani demo dukaan (personal number wali) ho to usay saaf kar do —
-  // personal number public demo login par nahi hona chahiye.
-  const oldDemo = db.prepare('SELECT id FROM shops WHERE mobile = ?').get('03289507102');
-  if (oldDemo) {
-    db.prepare('DELETE FROM allocations WHERE payment_id IN (SELECT id FROM payments WHERE shop_id = ?)').run(oldDemo.id);
-    db.prepare('DELETE FROM payments WHERE shop_id = ?').run(oldDemo.id);
-    db.prepare('DELETE FROM installments WHERE shop_id = ?').run(oldDemo.id);
-    db.prepare('DELETE FROM photos WHERE shop_id = ?').run(oldDemo.id);
-    db.prepare('DELETE FROM customers WHERE shop_id = ?').run(oldDemo.id);
-    db.prepare('DELETE FROM shops WHERE id = ?').run(oldDemo.id);
-  }
-  const demoRow = db.prepare('SELECT id FROM shops WHERE mobile = ?').get(DEMO_MOBILE);
-  if (!demoRow) {
-    const now = new Date();
-    const iso = d => d.toISOString().slice(0, 10);
-    const addM = (d, m) => { const x = new Date(d); x.setMonth(x.getMonth() + m); return x; };
-    const ym = d => iso(d).slice(0, 7);
-    const day = Math.min(now.getDate(), 28);
-    const shopId = db.prepare('INSERT INTO shops(name, owner_name, mobile, pass_hash, fee_due_date, active, created_at) VALUES (?,?,?,?,?,1,?)')
-      .run('Messam Mobile Zone (Demo)', 'Messam Abbas', DEMO_MOBILE, hashPassword(DEMO_PASS), iso(addM(now, 12)), iso(now)).lastInsertRowid;
-    const insCust = db.prepare(`INSERT INTO customers(shop_id, name, mobile, cnic, address, guarantor_name,
-      guarantor_mobile, item_name, imei, total_price, advance, months, qist_day,
-      first_month, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-    const insInst = db.prepare('INSERT INTO installments(customer_id, shop_id, seq, due_date, amount) VALUES (?,?,?,?,?)');
-    const insPay = db.prepare('INSERT INTO payments(customer_id, shop_id, amount, paid_at, created_at) VALUES (?,?,?,?,?)');
-    const insAlloc = db.prepare('INSERT INTO allocations(payment_id, installment_id, amount) VALUES (?,?,?)');
-    const addDemoCustomer = (c, startOffset, pays) => {
-      const cid = insCust.run(shopId, c.name, c.mobile, '', '', c.gname || '', c.gmobile || '',
-        c.item, c.imei || '', c.total, c.advance, c.months, day, ym(addM(now, startOffset)), iso(now)).lastInsertRowid;
-      const balance = c.total - c.advance;
-      const base = Math.floor(balance / c.months);
-      const insts = [];
-      for (let i = 0; i < c.months; i++) {
-        const amount = i < c.months - 1 ? base : balance - base * (c.months - 1);
-        const due = `${ym(addM(now, startOffset + i))}-${String(day).padStart(2, '0')}`;
-        insts.push({ id: insInst.run(cid, shopId, i + 1, due, amount).lastInsertRowid, left: amount });
+    // Default settings + owner seed
+    const setFee = db.prepare('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)');
+    await setFee.run('fee_amount', '6999');
+    const ownerRow = await db.prepare('SELECT id FROM owner LIMIT 1').get();
+    if (!ownerRow) {
+      const starter = process.env.QW_OWNER_PASSWORD || 'QistOwner#2026';
+      await db.prepare('INSERT INTO owner(login, pass_hash, name) VALUES (?, ?, ?)')
+        .run('jafran', hashPassword(starter), 'Jafran (Owner)');
+      console.log('[Qist Wasooli] Owner account ban gaya. Login: jafran (password README me hai — pehle login par badal lein)');
+    }
+
+    // Demo dukaan seed — SIRF Vercel demo par (VERCEL env) ya QW_DEMO_SEED=1 par.
+    // Asal client server par ye NAHI banti (wahan sirf asal dukaanain hoti hain).
+    if (process.env.VERCEL === '1' || process.env.QW_DEMO_SEED === '1') {
+      const DEMO_MOBILE = '03123456789';
+      const DEMO_PASS = '123';
+      // Purani demo dukaan (personal number wali) ho to usay saaf kar do —
+      // personal number public demo login par nahi hona chahiye.
+      const oldDemo = await db.prepare('SELECT id FROM shops WHERE mobile = ?').get('03289507102');
+      if (oldDemo) {
+        await db.prepare('DELETE FROM allocations WHERE payment_id IN (SELECT id FROM payments WHERE shop_id = ?)').run(oldDemo.id);
+        await db.prepare('DELETE FROM payments WHERE shop_id = ?').run(oldDemo.id);
+        await db.prepare('DELETE FROM installments WHERE shop_id = ?').run(oldDemo.id);
+        await db.prepare('DELETE FROM photos WHERE shop_id = ?').run(oldDemo.id);
+        await db.prepare('DELETE FROM customers WHERE shop_id = ?').run(oldDemo.id);
+        await db.prepare('DELETE FROM shops WHERE id = ?').run(oldDemo.id);
       }
-      for (const pay of pays) {
-        const pid = insPay.run(cid, shopId, pay.amount, pay.date, pay.date).lastInsertRowid;
-        let left = pay.amount;
-        for (const inst of insts) {
-          if (left <= 0) break;
-          const take = Math.min(left, inst.left);
-          if (take > 0) { insAlloc.run(pid, inst.id, take); inst.left -= take; left -= take; }
-        }
+      const demoRow = await db.prepare('SELECT id FROM shops WHERE mobile = ?').get(DEMO_MOBILE);
+      if (!demoRow) {
+        const now = new Date();
+        const iso = d => d.toISOString().slice(0, 10);
+        const addM = (d, m) => { const x = new Date(d); x.setMonth(x.getMonth() + m); return x; };
+        const ym = d => iso(d).slice(0, 7);
+        const day = Math.min(now.getDate(), 28);
+        const shopId = (await db.prepare('INSERT INTO shops(name, owner_name, mobile, pass_hash, fee_due_date, active, created_at) VALUES (?,?,?,?,?,1,?)')
+          .run('Messam Mobile Zone (Demo)', 'Messam Abbas', DEMO_MOBILE, hashPassword(DEMO_PASS), iso(addM(now, 12)), iso(now))).lastInsertRowid;
+        const insCust = db.prepare(`INSERT INTO customers(shop_id, name, mobile, cnic, address, guarantor_name,
+          guarantor_mobile, item_name, imei, total_price, advance, months, qist_day,
+          first_month, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+        const insInst = db.prepare('INSERT INTO installments(customer_id, shop_id, seq, due_date, amount) VALUES (?,?,?,?,?)');
+        const insPay = db.prepare('INSERT INTO payments(customer_id, shop_id, amount, paid_at, created_at) VALUES (?,?,?,?,?)');
+        const insAlloc = db.prepare('INSERT INTO allocations(payment_id, installment_id, amount) VALUES (?,?,?)');
+        const addDemoCustomer = async (c, startOffset, pays) => {
+          const cid = (await insCust.run(shopId, c.name, c.mobile, '', '', c.gname || '', c.gmobile || '',
+            c.item, c.imei || '', c.total, c.advance, c.months, day, ym(addM(now, startOffset)), iso(now))).lastInsertRowid;
+          const balance = c.total - c.advance;
+          const base = Math.floor(balance / c.months);
+          const insts = [];
+          for (let i = 0; i < c.months; i++) {
+            const amount = i < c.months - 1 ? base : balance - base * (c.months - 1);
+            const due = `${ym(addM(now, startOffset + i))}-${String(day).padStart(2, '0')}`;
+            insts.push({ id: (await insInst.run(cid, shopId, i + 1, due, amount)).lastInsertRowid, left: amount });
+          }
+          for (const pay of pays) {
+            const pid = (await insPay.run(cid, shopId, pay.amount, pay.date, pay.date)).lastInsertRowid;
+            let left = pay.amount;
+            for (const inst of insts) {
+              if (left <= 0) break;
+              const take = Math.min(left, inst.left);
+              if (take > 0) { await insAlloc.run(pid, inst.id, take); inst.left -= take; left -= take; }
+            }
+          }
+        };
+        await addDemoCustomer({ name: 'Ahmed Raza', mobile: '03001110001', item: 'Samsung A55', total: 30000, advance: 6000, months: 6 },
+          -5, [-5, -4, -3, -2].map(o => ({ amount: 4000, date: iso(addM(now, o)) })));
+        await addDemoCustomer({ name: 'Bilal Ahmed', mobile: '03004440004', item: 'iPhone 12', imei: '359876543210123', gname: 'Shahid Iqbal', gmobile: '03004440009', total: 150000, advance: 30000, months: 8 },
+          -2, [{ amount: 15000, date: iso(addM(now, -2)) }, { amount: 5000, date: iso(addM(now, -1)) }]);
+        await addDemoCustomer({ name: 'Sana Tariq', mobile: '03007770007', item: 'Infinix Note 40', total: 48000, advance: 8000, months: 5 }, -1, []);
+        console.log('[Qist Wasooli] Demo dukaan tayyar: ' + DEMO_MOBILE + ' / ' + DEMO_PASS);
       }
-    };
-    addDemoCustomer({ name: 'Ahmed Raza', mobile: '03001110001', item: 'Samsung A55', total: 30000, advance: 6000, months: 6 },
-      -5, [-5, -4, -3, -2].map(o => ({ amount: 4000, date: iso(addM(now, o)) })));
-    addDemoCustomer({ name: 'Bilal Ahmed', mobile: '03004440004', item: 'iPhone 12', imei: '359876543210123', gname: 'Shahid Iqbal', gmobile: '03004440009', total: 150000, advance: 30000, months: 8 },
-      -2, [{ amount: 15000, date: iso(addM(now, -2)) }, { amount: 5000, date: iso(addM(now, -1)) }]);
-    addDemoCustomer({ name: 'Sana Tariq', mobile: '03007770007', item: 'Infinix Note 40', total: 48000, advance: 8000, months: 5 }, -1, []);
-    console.log('[Qist Wasooli] Demo dukaan tayyar: ' + DEMO_MOBILE + ' / ' + DEMO_PASS);
-  }
-}
+    }
 
+    // Backup sirf local (file wali) mode me — Turso par data hosted rehta
+    // hai; wahan backup = owner ka database download + Turso ki apni copy.
+    if (db.isLocal) {
+      makeBackup().catch(e => console.error('Backup error:', e.message));
+      setInterval(() => makeBackup().catch(e => console.error('Backup error:', e.message)),
+        24 * 60 * 60 * 1000).unref();
+    }
+  })();
+  return initPromise;
+}
+// ==== INIT-DB END ====
 
 // ---------------------------------------------------------------- PDF (bina library ke — asal khulne wali PDF)
 const fmt = n => 'Rs ' + Number(n || 0).toLocaleString('en-US');
@@ -258,22 +276,34 @@ function makePdf(lines) {
   return Buffer.from(out, 'latin1');
 }
 
-function shopPdfLines(shop) {
+async function shopPdfLines(shop) {
   const today = todayStr();
-  const custs = db.prepare('SELECT * FROM customers WHERE shop_id = ? ORDER BY name').all(shop.id);
+  const custs = await db.prepare('SELECT * FROM customers WHERE shop_id = ? ORDER BY name').all(shop.id);
+  // Poori dukaan ki qistein + un par jama rakam — sirf 2 sawalon me (hosted DB par tez rahe)
+  const instsAll = await db.prepare('SELECT * FROM installments WHERE shop_id = ? ORDER BY seq').all(shop.id);
+  const paidRows = await db.prepare(`
+    SELECT a.installment_id AS iid, COALESCE(SUM(a.amount),0) AS paid
+    FROM allocations a JOIN installments i ON i.id = a.installment_id
+    WHERE i.shop_id = ? GROUP BY a.installment_id`).all(shop.id);
+  const paidMap = new Map(paidRows.map(r => [r.iid, r.paid]));
+  const instByCust = new Map();
+  for (const i of instsAll) {
+    if (!instByCust.has(i.customer_id)) instByCust.set(i.customer_id, []);
+    instByCust.get(i.customer_id).push(i);
+  }
   let kulHisaab = 0, kulJama = 0;
   const body = [];
   custs.forEach((c, idx) => {
-    const t = customerTotals(c.id);
-    kulHisaab += t.total; kulJama += t.paid;
-    const paidMap = installmentPaidMap(c.id);
-    const insts = db.prepare('SELECT * FROM installments WHERE customer_id = ? ORDER BY seq').all(c.id);
-    let jama = 0, late = 0, lateAmt = 0;
+    const insts = instByCust.get(c.id) || [];
+    let total = 0, paidSum = 0, jama = 0, late = 0, lateAmt = 0;
     for (const i of insts) {
       const paid = paidMap.get(i.id) || 0;
+      total += i.amount; paidSum += paid;
       if (paid >= i.amount) jama++;
       else if (i.due_date < today) { late++; lateAmt += i.amount - paid; }
     }
+    const t = { total, paid: paidSum, remaining: total - paidSum };
+    kulHisaab += t.total; kulJama += t.paid;
     const monthly = insts.length > 1 ? insts[1].amount : (insts[0] ? insts[0].amount : 0);
     body.push({ t: `${idx + 1}. ${c.name}  -  ${c.mobile}`, s: 12, b: true, sp: 2 });
     body.push({ t: `Cheez: ${c.item_name || '-'}    Kul qeemat: ${fmt(c.total_price)}    Advance: ${fmt(c.advance)}`, sp: 2 });
@@ -291,16 +321,17 @@ function shopPdfLines(shop) {
   ];
 }
 
-function ownerPdfLines() {
+async function ownerPdfLines() {
   const today = todayStr();
-  const fee = Number(db.prepare("SELECT value FROM settings WHERE key='fee_amount'").get().value);
-  const shops = db.prepare('SELECT * FROM shops ORDER BY name').all();
+  const fee = Number((await db.prepare("SELECT value FROM settings WHERE key='fee_amount'").get()).value);
+  const shops = await db.prepare('SELECT * FROM shops ORDER BY name').all();
   const active = shops.filter(s => s.active).length;
-  const custCount = db.prepare('SELECT COUNT(*) AS c FROM customers').get().c;
+  const custCount = (await db.prepare('SELECT COUNT(*) AS c FROM customers').get()).c;
+  const stats = await allShopStats();
   let stuck = 0;
   const body = [];
   shops.forEach((s, idx) => {
-    const st = shopStats(s.id);
+    const st = stats.get(s.id) || { customers: 0, stuck: 0, collected: 0 };
     stuck += st.stuck;
     body.push({ t: `${idx + 1}. ${s.name}  -  Maalik: ${s.owner_name}  -  ${s.mobile}`, s: 12, b: true, sp: 2 });
     body.push({ t: `Halat: ${s.active ? 'Active' : 'Band'}   |   Fee ki agli tareekh: ${s.fee_due_date}   |   Fee: ${fmt(fee)}/mahina`, sp: 2 });
@@ -323,45 +354,45 @@ function sendPdf(res, lines, filename) {
     'Content-Disposition': `attachment; filename="${filename}"`, 'Content-Length': buf.length });
   res.end(buf);
 }
-function handleShopPdf(req, res, shop) { sendPdf(res, shopPdfLines(shop), `qist-data-${todayStr()}.pdf`); }
+async function handleShopPdf(req, res, shop) { sendPdf(res, await shopPdfLines(shop), `qist-data-${todayStr()}.pdf`); }
 
 // ---------------------------------------------------------------- customer photo
-function findOwnCustomer(shop, id) {
-  return db.prepare('SELECT * FROM customers WHERE id = ? AND shop_id = ?').get(id, shop.id);
+async function findOwnCustomer(shop, id) {
+  return await db.prepare('SELECT * FROM customers WHERE id = ? AND shop_id = ?').get(id, shop.id);
 }
 async function handlePhotoPost(req, res, shop, id) {
-  if (!findOwnCustomer(shop, id)) return sendJSON(res, 404, { error: 'Customer nahi mila' });
+  if (!await findOwnCustomer(shop, id)) return sendJSON(res, 404, { error: 'Customer nahi mila' });
   const b = await readBody(req);
   const kind = b.kind === 'item' ? 'item' : 'customer';
   const m = String(b.image || '').match(/^data:image\/(jpeg|png);base64,(.+)$/);
   if (!m) return sendJSON(res, 400, { error: 'Photo sahi bhejein' });
   const buf = Buffer.from(m[2], 'base64');
   if (!buf.length || buf.length > 2 * 1024 * 1024) return sendJSON(res, 400, { error: 'Photo bohat bari hai' });
-  db.prepare(`INSERT INTO photos(shop_id, customer_id, kind, data, created_at) VALUES(?,?,?,?,?)
+  await db.prepare(`INSERT INTO photos(shop_id, customer_id, kind, data, created_at) VALUES(?,?,?,?,?)
               ON CONFLICT(customer_id, kind) DO UPDATE SET data = excluded.data, created_at = excluded.created_at`)
     .run(shop.id, id, kind, buf, todayStr());
   sendJSON(res, 200, { ok: true });
 }
-function handlePhotoGet(req, res, shop, id, kind) {
-  if (!findOwnCustomer(shop, id)) return sendJSON(res, 404, { error: 'Customer nahi mila' });
-  const ph = db.prepare('SELECT data FROM photos WHERE customer_id = ? AND kind = ?').get(id, kind);
+async function handlePhotoGet(req, res, shop, id, kind) {
+  if (!await findOwnCustomer(shop, id)) return sendJSON(res, 404, { error: 'Customer nahi mila' });
+  const ph = await db.prepare('SELECT data FROM photos WHERE customer_id = ? AND kind = ?').get(id, kind);
   if (!ph) return sendJSON(res, 404, { error: 'Photo nahi hai' });
   res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=120' });
   res.end(Buffer.from(ph.data));
 }
-function handlePhotoDelete(req, res, shop, id, kind) {
-  if (!findOwnCustomer(shop, id)) return sendJSON(res, 404, { error: 'Customer nahi mila' });
-  db.prepare('DELETE FROM photos WHERE customer_id = ? AND kind = ?').run(id, kind);
+async function handlePhotoDelete(req, res, shop, id, kind) {
+  if (!await findOwnCustomer(shop, id)) return sendJSON(res, 404, { error: 'Customer nahi mila' });
+  await db.prepare('DELETE FROM photos WHERE customer_id = ? AND kind = ?').run(id, kind);
   sendJSON(res, 200, { ok: true });
 }
 
 // ---------------------------------------------------------------- backup (roz khud bakhud)
-function makeBackup() {
+async function makeBackup() {
   try {
     const stamp = todayStr();
     const dest = path.join(BACKUP_DIR, `qist-${stamp}.db`);
     if (!fs.existsSync(dest)) {
-      db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
+      await db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
     }
     // purane backups saaf: sirf akhri 14 rakho
     const files = fs.readdirSync(BACKUP_DIR).filter(f => f.endsWith('.db')).sort();
@@ -373,8 +404,8 @@ function makeBackup() {
       const pdir = path.join(BACKUP_DIR, `pdf-${stamp}`);
       if (!fs.existsSync(pdir)) {
         fs.mkdirSync(pdir, { recursive: true });
-        for (const s of db.prepare('SELECT * FROM shops').all()) {
-          fs.writeFileSync(path.join(pdir, `shop-${s.id}.pdf`), makePdf(shopPdfLines(s)));
+        for (const s of await db.prepare('SELECT * FROM shops').all()) {
+          fs.writeFileSync(path.join(pdir, `shop-${s.id}.pdf`), makePdf(await shopPdfLines(s)));
         }
       }
       const dirs = fs.readdirSync(BACKUP_DIR).filter(f => f.startsWith('pdf-')).sort();
@@ -382,8 +413,7 @@ function makeBackup() {
     } catch (e) { console.error('PDF backup error:', e.message); }
   } catch (e) { console.error('Backup error:', e.message); }
 }
-makeBackup();
-setInterval(makeBackup, 24 * 60 * 60 * 1000).unref();
+// (backup ab initDb se shuru hota hai — local mode me)
 
 // ---------------------------------------------------------------- sessions
 function signToken(payload) {
@@ -431,8 +461,8 @@ function readBody(req) {
 const rs = n => 'Rs. ' + Number(n || 0).toLocaleString('en-PK');
 
 // Customer ke hisaab ke liye: har qist ki paid rakam allocations se
-function installmentPaidMap(customerId) {
-  const rows = db.prepare(`
+async function installmentPaidMap(customerId) {
+  const rows = await db.prepare(`
     SELECT a.installment_id AS iid, COALESCE(SUM(a.amount),0) AS paid
     FROM allocations a JOIN installments i ON i.id = a.installment_id
     WHERE i.customer_id = ? GROUP BY a.installment_id`).all(customerId);
@@ -440,33 +470,33 @@ function installmentPaidMap(customerId) {
   for (const r of rows) map.set(r.iid, r.paid);
   return map;
 }
-function customerTotals(customerId) {
-  const inst = db.prepare('SELECT id, amount FROM installments WHERE customer_id = ?').all(customerId);
-  const paidMap = installmentPaidMap(customerId);
+async function customerTotals(customerId) {
+  const inst = await db.prepare('SELECT id, amount FROM installments WHERE customer_id = ?').all(customerId);
+  const paidMap = await installmentPaidMap(customerId);
   let total = 0, paid = 0;
   for (const i of inst) { total += i.amount; paid += (paidMap.get(i.id) || 0); }
   return { total, paid, remaining: total - paid };
 }
 
 // Auth guards — hamesha token se, kabhi client ki bheji shop_id se nahi
-function requireShop(req, res) {
+async function requireShop(req, res) {
   const s = getSession(req);
   if (!s || s.role !== 'shop') { sendJSON(res, 401, { error: 'Pehle login karein' }); return null; }
-  const shop = db.prepare('SELECT * FROM shops WHERE id = ?').get(s.id);
+  const shop = await db.prepare('SELECT * FROM shops WHERE id = ?').get(s.id);
   if (!shop) { sendJSON(res, 401, { error: 'Dukaan nahi mili' }); return null; }
   if (!shop.active) { sendJSON(res, 403, { error: 'Aapki dukaan band hai. Fee ke liye owner se rabta karein.', blocked: true }); return null; }
   return shop;
 }
-function requireOwner(req, res) {
+async function requireOwner(req, res) {
   const s = getSession(req);
   if (!s || s.role !== 'owner') { sendJSON(res, 401, { error: 'Pehle owner login karein' }); return null; }
-  return db.prepare('SELECT * FROM owner WHERE id = ?').get(s.id);
+  return await db.prepare('SELECT * FROM owner WHERE id = ?').get(s.id);
 }
 
 // ---------------------------------------------------------------- API: auth
 async function handleLogin(req, res) {
   const { mobile, password } = await readBody(req);
-  const shop = db.prepare('SELECT * FROM shops WHERE mobile = ?').get(String(mobile || '').trim());
+  const shop = await db.prepare('SELECT * FROM shops WHERE mobile = ?').get(String(mobile || '').trim());
   if (!shop || !verifyPassword(password || '', shop.pass_hash)) {
     return sendJSON(res, 401, { error: 'Number ya password ghalat hai' });
   }
@@ -479,7 +509,7 @@ async function handleLogin(req, res) {
 }
 async function handleOwnerLogin(req, res) {
   const { login, password } = await readBody(req);
-  const owner = db.prepare('SELECT * FROM owner WHERE login = ?').get(String(login || '').trim());
+  const owner = await db.prepare('SELECT * FROM owner WHERE login = ?').get(String(login || '').trim());
   if (!owner || !verifyPassword(password || '', owner.pass_hash)) {
     return sendJSON(res, 401, { error: 'Login ya password ghalat hai' });
   }
@@ -489,56 +519,52 @@ async function handleOwnerLogin(req, res) {
 }
 
 // ---------------------------------------------------------------- API: shop
-function handleHome(req, res, shop) {
+async function handleHome(req, res, shop) {
   const today = todayStr();
   const thisMonth = monthOf(today);
-  // Aaj ki qistein
-  const dueRows = db.prepare(`
-    SELECT i.id, i.customer_id, i.amount, c.name, c.mobile
+  // Aaj ki qistein (har qist par jama rakam sath hi — ek hi sawal, hosted DB par tez)
+  const dueRows = await db.prepare(`
+    SELECT i.id, i.customer_id, i.amount, COALESCE(SUM(a.amount),0) AS paid, c.name, c.mobile
     FROM installments i JOIN customers c ON c.id = i.customer_id
-    WHERE i.shop_id = ? AND i.due_date = ? ORDER BY c.name`).all(shop.id, today);
+    LEFT JOIN allocations a ON a.installment_id = i.id
+    WHERE i.shop_id = ? AND i.due_date = ? GROUP BY i.id ORDER BY c.name`).all(shop.id, today);
   const todayList = [];
   let todayTotal = 0;
   for (const r of dueRows) {
-    const paid = db.prepare('SELECT COALESCE(SUM(amount),0) AS p FROM allocations WHERE installment_id = ?').get(r.id).p;
-    const rem = r.amount - paid;
+    const rem = r.amount - r.paid;
     if (rem > 0) { todayList.push({ customerId: r.customer_id, name: r.name, mobile: r.mobile, amount: rem }); todayTotal += rem; }
   }
-  const monthExpected = db.prepare(`
+  const monthExpected = (await db.prepare(`
     SELECT COALESCE(SUM(amount),0) AS s FROM installments
-    WHERE shop_id = ? AND substr(due_date,1,7) = ?`).get(shop.id, thisMonth).s;
-  const monthCollected = db.prepare(`
+    WHERE shop_id = ? AND substr(due_date,1,7) = ?`).get(shop.id, thisMonth)).s;
+  const monthCollected = (await db.prepare(`
     SELECT COALESCE(SUM(amount),0) AS s FROM payments
-    WHERE shop_id = ? AND substr(paid_at,1,7) = ?`).get(shop.id, thisMonth).s;
+    WHERE shop_id = ? AND substr(paid_at,1,7) = ?`).get(shop.id, thisMonth)).s;
   // Late
-  const lateRows = db.prepare(`
-    SELECT i.id, i.amount FROM installments i
-    WHERE i.shop_id = ? AND i.due_date < ?`).all(shop.id, today);
-  let lateAmount = 0; const lateCust = new Set();
-  const lateInstIds = [];
+  const lateRows = await db.prepare(`
+    SELECT i.id, i.customer_id, i.amount, COALESCE(SUM(a.amount),0) AS paid
+    FROM installments i LEFT JOIN allocations a ON a.installment_id = i.id
+    WHERE i.shop_id = ? AND i.due_date < ? GROUP BY i.id`).all(shop.id, today);
+  let lateAmount = 0;
+  const lateCust = new Set();
   for (const r of lateRows) {
-    const paid = db.prepare('SELECT COALESCE(SUM(amount),0) AS p FROM allocations WHERE installment_id = ?').get(r.id).p;
-    if (r.amount - paid > 0) {
-      lateAmount += (r.amount - paid); lateInstIds.push(r.id);
-    }
+    const rem = r.amount - r.paid;
+    if (rem > 0) { lateAmount += rem; lateCust.add(r.customer_id); }
   }
-  if (lateInstIds.length) {
-    const q = db.prepare(`SELECT COUNT(DISTINCT customer_id) AS c FROM installments WHERE id IN (${lateInstIds.map(() => '?').join(',')})`).get(...lateInstIds);
-    var lateCount = q.c;
-  } else var lateCount = 0;
+  const lateCount = lateCust.size;
   sendJSON(res, 200, { todayList, todayTotal, monthExpected, monthCollected, lateCount, lateAmount, today });
 }
 
-function handleLate(req, res, shop) {
+async function handleLate(req, res, shop) {
   const today = todayStr();
-  const rows = db.prepare(`
-    SELECT i.customer_id, i.due_date, i.amount, i.id, c.name, c.mobile
+  const rows = await db.prepare(`
+    SELECT i.customer_id, i.due_date, i.amount, i.id, COALESCE(SUM(a.amount),0) AS paid, c.name, c.mobile
     FROM installments i JOIN customers c ON c.id = i.customer_id
-    WHERE i.shop_id = ? AND i.due_date < ? ORDER BY i.due_date ASC`).all(shop.id, today);
+    LEFT JOIN allocations a ON a.installment_id = i.id
+    WHERE i.shop_id = ? AND i.due_date < ? GROUP BY i.id ORDER BY i.due_date ASC`).all(shop.id, today);
   const byCust = new Map();
   for (const r of rows) {
-    const paid = db.prepare('SELECT COALESCE(SUM(amount),0) AS p FROM allocations WHERE installment_id = ?').get(r.id).p;
-    const rem = r.amount - paid;
+    const rem = r.amount - r.paid;
     if (rem <= 0) continue;
     if (!byCust.has(r.customer_id)) {
       byCust.set(r.customer_id, {
@@ -548,8 +574,9 @@ function handleLate(req, res, shop) {
     }
     byCust.get(r.customer_id).overdueAmount += rem;
   }
+  const totalsMap = await customerTotalsMap([...byCust.keys()]);
   const list = [...byCust.values()].map(c => {
-    const totals = customerTotals(c.customerId);
+    const totals = totalsMap.get(c.customerId) || { total: 0, paid: 0, remaining: 0 };
     const daysLate = daysBetween(c.oldestDue, today);
     return { ...c, daysLate, totalRemaining: totals.remaining,
              level: daysLate >= 30 ? 'red' : (daysLate >= 7 ? 'yellow' : 'normal') };
@@ -575,18 +602,18 @@ async function handleAddCustomer(req, res, shop) {
 
   const balance = totalPrice - advance;
   const base = Math.floor(balance / months);
-  const insertCust = db.prepare(`
+  const insertCust = await db.prepare(`
     INSERT INTO customers(shop_id, name, mobile, cnic, address, guarantor_name,
       guarantor_mobile, item_name, imei, total_price, advance, months, qist_day,
       first_month, created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-  const insertInst = db.prepare(`
+  const insertInst = await db.prepare(`
     INSERT INTO installments(customer_id, shop_id, seq, due_date, amount)
     VALUES (?,?,?,?,?)`);
   let custId;
-  db.exec('BEGIN');
+  await db.exec('BEGIN');
   try {
-    const info = insertCust.run(shop.id, name, mobile, String(b.cnic || '').trim(),
+    const info = await insertCust.run(shop.id, name, mobile, String(b.cnic || '').trim(),
       String(b.address || '').trim(), String(b.guarantor_name || '').trim(),
       String(b.guarantor_mobile || '').trim(), String(b.item_name || '').trim(),
       String(b.imei || '').trim(), totalPrice, advance, months, qistDay, firstMonth, todayStr());
@@ -594,39 +621,46 @@ async function handleAddCustomer(req, res, shop) {
     for (let i = 0; i < months; i++) {
       const amount = i < months - 1 ? base : balance - base * (months - 1);
       const due = `${addMonthsToYM(firstMonth, i)}-${String(qistDay).padStart(2, '0')}`;
-      insertInst.run(custId, shop.id, i + 1, due, amount);
+      await insertInst.run(custId, shop.id, i + 1, due, amount);
     }
-    db.exec('COMMIT');
-  } catch (e) { db.exec('ROLLBACK'); throw e; }
+    await db.exec('COMMIT');
+  } catch (e) { await db.exec('ROLLBACK'); throw e; }
   sendJSON(res, 200, { ok: true, customerId: custId, monthly: base, balance });
 }
 
-function handleCustomers(req, res, shop, url) {
+async function handleCustomers(req, res, shop, url) {
   const q = (url.searchParams.get('q') || '').trim();
   let rows;
   if (q) {
-    rows = db.prepare(`SELECT * FROM customers WHERE shop_id = ? AND (name LIKE ? OR mobile LIKE ?) ORDER BY name`)
+    rows = await db.prepare(`SELECT * FROM customers WHERE shop_id = ? AND (name LIKE ? OR mobile LIKE ?) ORDER BY name`)
       .all(shop.id, `%${q}%`, `%${q}%`);
   } else {
-    rows = db.prepare('SELECT * FROM customers WHERE shop_id = ? ORDER BY name LIMIT 500').all(shop.id);
+    rows = await db.prepare('SELECT * FROM customers WHERE shop_id = ? ORDER BY name LIMIT 500').all(shop.id);
+  }
+  // Kul hisaab aur mahana qist — sab customers ke liye sirf 2 sawal (hosted DB par tez)
+  const totalsMap = await customerTotalsMap(rows.map(c => c.id));
+  const mRows = await db.prepare('SELECT customer_id, seq, amount FROM installments WHERE shop_id = ? AND seq IN (1,2)').all(shop.id);
+  const monthly = new Map();
+  for (const r of mRows) {
+    if (!monthly.has(r.customer_id)) monthly.set(r.customer_id, {});
+    monthly.get(r.customer_id)[r.seq] = r.amount;
   }
   const list = rows.map(c => {
-    const t = customerTotals(c.id);
-    const m2 = db.prepare('SELECT amount FROM installments WHERE customer_id = ? AND seq = 2').get(c.id);
-    const m1 = m2 ? null : db.prepare('SELECT amount FROM installments WHERE customer_id = ? AND seq = 1').get(c.id);
+    const t = totalsMap.get(c.id) || { total: 0, paid: 0, remaining: 0 };
+    const mm = monthly.get(c.id) || {};
     return { id: c.id, name: c.name, mobile: c.mobile, item_name: c.item_name,
              total_price: c.total_price, remaining: t.remaining, paid: t.paid,
-             monthly: m2 ? m2.amount : (m1 ? m1.amount : 0) };
+             monthly: mm[2] != null ? mm[2] : (mm[1] != null ? mm[1] : 0) };
   });
   sendJSON(res, 200, { list });
 }
 
-function handleCustomerFile(req, res, shop, id) {
-  const c = db.prepare('SELECT * FROM customers WHERE id = ? AND shop_id = ?').get(id, shop.id);
+async function handleCustomerFile(req, res, shop, id) {
+  const c = await db.prepare('SELECT * FROM customers WHERE id = ? AND shop_id = ?').get(id, shop.id);
   if (!c) return sendJSON(res, 404, { error: 'Customer nahi mila' });
   const today = todayStr();
-  const paidMap = installmentPaidMap(id);
-  const inst = db.prepare('SELECT * FROM installments WHERE customer_id = ? ORDER BY seq').all(id)
+  const paidMap = await installmentPaidMap(id);
+  const inst = (await db.prepare('SELECT * FROM installments WHERE customer_id = ? ORDER BY seq').all(id))
     .map(i => {
       const paid = paidMap.get(i.id) || 0;
       const remaining = i.amount - paid;
@@ -636,8 +670,8 @@ function handleCustomerFile(req, res, shop, id) {
       else if (paid > 0) status = 'aadhi';
       return { id: i.id, seq: i.seq, due_date: i.due_date, amount: i.amount, paid, remaining, status };
     });
-  const payments = db.prepare('SELECT * FROM payments WHERE customer_id = ? ORDER BY id DESC').all(id);
-  const t = customerTotals(id);
+  const payments = await db.prepare('SELECT * FROM payments WHERE customer_id = ? ORDER BY id DESC').all(id);
+  const t = await customerTotals(id);
   const ym = today.slice(0, 7);
   const thisMonth = inst.filter(i => i.due_date.slice(0, 7) === ym);
   const hisaab = {
@@ -650,7 +684,7 @@ function handleCustomerFile(req, res, shop, id) {
                                     paid: i.paid, remaining: i.remaining, status: i.status })),
     isMahineBaqi: thisMonth.reduce((s, i) => s + i.remaining, 0),
   };
-  const photoRows = db.prepare('SELECT kind FROM photos WHERE customer_id = ?').all(id);
+  const photoRows = await db.prepare('SELECT kind FROM photos WHERE customer_id = ?').all(id);
   const photos = { customer: photoRows.some(r => r.kind === 'customer'),
                    item: photoRows.some(r => r.kind === 'item') };
   sendJSON(res, 200, { customer: c, installments: inst, payments, hisaab, photos,
@@ -658,69 +692,100 @@ function handleCustomerFile(req, res, shop, id) {
 }
 
 async function handleAddPayment(req, res, shop, customerId) {
-  const c = db.prepare('SELECT * FROM customers WHERE id = ? AND shop_id = ?').get(customerId, shop.id);
+  const c = await db.prepare('SELECT * FROM customers WHERE id = ? AND shop_id = ?').get(customerId, shop.id);
   if (!c) return sendJSON(res, 404, { error: 'Customer nahi mila' });
   const b = await readBody(req);
   const amount = Math.round(Number(b.amount));
   if (!amount || amount <= 0) return sendJSON(res, 400, { error: 'Rakam sahi likhein' });
-  const t = customerTotals(customerId);
+  const t = await customerTotals(customerId);
   if (amount > t.remaining) {
     return sendJSON(res, 400, { error: `Baqi sirf ${rs(t.remaining)} hai — is se zyada nahi likh sakte` });
   }
   // FIFO: sab se purani qist pehle
-  const inst = db.prepare('SELECT * FROM installments WHERE customer_id = ? ORDER BY seq').all(customerId);
-  const paidMap = installmentPaidMap(customerId);
+  const inst = await db.prepare('SELECT * FROM installments WHERE customer_id = ? ORDER BY seq').all(customerId);
+  const paidMap = await installmentPaidMap(customerId);
   let left = amount;
-  db.exec('BEGIN');
+  await db.exec('BEGIN');
   try {
-    const info = db.prepare('INSERT INTO payments(customer_id, shop_id, amount, paid_at, created_at) VALUES (?,?,?,?,?)')
+    const info = await db.prepare('INSERT INTO payments(customer_id, shop_id, amount, paid_at, created_at) VALUES (?,?,?,?,?)')
       .run(customerId, shop.id, amount, todayStr(), new Date().toISOString());
     const payId = info.lastInsertRowid;
-    const insAlloc = db.prepare('INSERT INTO allocations(payment_id, installment_id, amount) VALUES (?,?,?)');
+    const insAlloc = await db.prepare('INSERT INTO allocations(payment_id, installment_id, amount) VALUES (?,?,?)');
     for (const i of inst) {
       if (left <= 0) break;
       const rem = i.amount - (paidMap.get(i.id) || 0);
       if (rem <= 0) continue;
       const give = Math.min(rem, left);
-      insAlloc.run(payId, i.id, give);
+      await insAlloc.run(payId, i.id, give);
       left -= give;
     }
-    db.exec('COMMIT');
+    await db.exec('COMMIT');
     sendJSON(res, 200, { ok: true, paymentId: payId, newRemaining: t.remaining - amount });
-  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  } catch (e) { await db.exec('ROLLBACK'); throw e; }
 }
 
-function handleDeletePayment(req, res, shop, paymentId) {
-  const p = db.prepare('SELECT * FROM payments WHERE id = ? AND shop_id = ?').get(paymentId, shop.id);
+async function handleDeletePayment(req, res, shop, paymentId) {
+  const p = await db.prepare('SELECT * FROM payments WHERE id = ? AND shop_id = ?').get(paymentId, shop.id);
   if (!p) return sendJSON(res, 404, { error: 'Payment nahi mili' });
-  db.exec('BEGIN');
+  await db.exec('BEGIN');
   try {
-    db.prepare('DELETE FROM allocations WHERE payment_id = ?').run(paymentId);
-    db.prepare('DELETE FROM payments WHERE id = ?').run(paymentId);
-    db.exec('COMMIT');
-  } catch (e) { db.exec('ROLLBACK'); throw e; }
+    await db.prepare('DELETE FROM allocations WHERE payment_id = ?').run(paymentId);
+    await db.prepare('DELETE FROM payments WHERE id = ?').run(paymentId);
+    await db.exec('COMMIT');
+  } catch (e) { await db.exec('ROLLBACK'); throw e; }
   sendJSON(res, 200, { ok: true });
 }
 
 // ---------------------------------------------------------------- API: owner
-function shopStats(shopId) {
+// Kai customers ke kul hisaab ek sath — sirf 2 sawal (hosted DB par tez)
+async function customerTotalsMap(customerIds) {
+  const map = new Map();
+  if (!customerIds.length) return map;
+  const ph = customerIds.map(() => '?').join(',');
+  const inst = await db.prepare(`SELECT customer_id, id, amount FROM installments WHERE customer_id IN (${ph})`).all(...customerIds);
+  const paidRows = await db.prepare(`
+    SELECT i.customer_id AS cid, a.installment_id AS iid, COALESCE(SUM(a.amount),0) AS paid
+    FROM allocations a JOIN installments i ON i.id = a.installment_id
+    WHERE i.customer_id IN (${ph}) GROUP BY a.installment_id`).all(...customerIds);
+  const paidMap = new Map(paidRows.map(r => [r.iid, r.paid]));
+  for (const i of inst) {
+    if (!map.has(i.customer_id)) map.set(i.customer_id, { total: 0, paid: 0, remaining: 0 });
+    const t = map.get(i.customer_id);
+    t.total += i.amount;
+    t.paid += (paidMap.get(i.id) || 0);
+  }
+  for (const t of map.values()) t.remaining = t.total - t.paid;
+  return map;
+}
+// Saari dukaanon ke stats ek sath — sirf 3 sawal (owner dashboard ke liye)
+async function allShopStats() {
   const today = todayStr();
   const thisMonth = monthOf(today);
-  const customers = db.prepare('SELECT COUNT(*) AS c FROM customers WHERE shop_id = ?').get(shopId).c;
-  const inst = db.prepare('SELECT id, amount FROM installments WHERE shop_id = ? AND due_date < ?').all(shopId, today);
-  let stuck = 0;
-  for (const i of inst) {
-    const paid = db.prepare('SELECT COALESCE(SUM(amount),0) AS p FROM allocations WHERE installment_id = ?').get(i.id).p;
-    stuck += Math.max(0, i.amount - paid);
+  const map = new Map();
+  const ensure = id => {
+    if (!map.has(id)) map.set(id, { customers: 0, stuck: 0, collected: 0 });
+    return map.get(id);
+  };
+  for (const r of await db.prepare('SELECT shop_id, COUNT(*) AS c FROM customers GROUP BY shop_id').all()) {
+    ensure(r.shop_id).customers = r.c;
   }
-  const collected = db.prepare('SELECT COALESCE(SUM(amount),0) AS s FROM payments WHERE shop_id = ? AND substr(paid_at,1,7) = ?')
-    .get(shopId, thisMonth).s;
-  return { customers, stuck, collected };
+  const lateRows = await db.prepare(`
+    SELECT i.shop_id, i.amount, COALESCE(SUM(a.amount),0) AS paid
+    FROM installments i LEFT JOIN allocations a ON a.installment_id = i.id
+    WHERE i.due_date < ? GROUP BY i.id`).all(today);
+  for (const r of lateRows) ensure(r.shop_id).stuck += Math.max(0, r.amount - r.paid);
+  for (const r of await db.prepare(`
+    SELECT shop_id, COALESCE(SUM(amount),0) AS s FROM payments
+    WHERE substr(paid_at,1,7) = ? GROUP BY shop_id`).all(thisMonth)) {
+    ensure(r.shop_id).collected = r.s;
+  }
+  return map;
 }
-function handleOwnerShops(req, res) {
-  const fee = Number(db.prepare("SELECT value FROM settings WHERE key='fee_amount'").get().value);
-  const shops = db.prepare('SELECT id, name, owner_name, mobile, fee_due_date, active, created_at FROM shops ORDER BY name').all()
-    .map(s => ({ ...s, fee_amount: fee, ...shopStats(s.id) }));
+async function handleOwnerShops(req, res) {
+  const fee = Number((await db.prepare("SELECT value FROM settings WHERE key='fee_amount'").get()).value);
+  const stats = await allShopStats();
+  const shops = (await db.prepare('SELECT id, name, owner_name, mobile, fee_due_date, active, created_at FROM shops ORDER BY name').all())
+    .map(s => ({ ...s, fee_amount: fee, ...(stats.get(s.id) || { customers: 0, stuck: 0, collected: 0 }) }));
   sendJSON(res, 200, { shops, fee_amount: fee });
 }
 async function handleOwnerAddShop(req, res) {
@@ -732,35 +797,35 @@ async function handleOwnerAddShop(req, res) {
   if (!name || !ownerName || !mobile || password.length < 4) {
     return sendJSON(res, 400, { error: 'Dukaan ka naam, maalik, mobile aur kam az kam 4 harf ka password lazmi hai' });
   }
-  const exists = db.prepare('SELECT id FROM shops WHERE mobile = ?').get(mobile);
+  const exists = await db.prepare('SELECT id FROM shops WHERE mobile = ?').get(mobile);
   if (exists) return sendJSON(res, 400, { error: 'Ye mobile number pehle se kisi dukaan par hai' });
   const feeDue = addOneMonthToDate(todayStr());
-  const info = db.prepare('INSERT INTO shops(name, owner_name, mobile, pass_hash, fee_due_date, active, created_at) VALUES (?,?,?,?,?,1,?)')
+  const info = await db.prepare('INSERT INTO shops(name, owner_name, mobile, pass_hash, fee_due_date, active, created_at) VALUES (?,?,?,?,?,1,?)')
     .run(name, ownerName, mobile, hashPassword(password), feeDue, todayStr());
   sendJSON(res, 200, { ok: true, shopId: info.lastInsertRowid, fee_due_date: feeDue });
 }
-function handleOwnerFeePaid(req, res, shopId) {
-  const shop = db.prepare('SELECT * FROM shops WHERE id = ?').get(shopId);
+async function handleOwnerFeePaid(req, res, shopId) {
+  const shop = await db.prepare('SELECT * FROM shops WHERE id = ?').get(shopId);
   if (!shop) return sendJSON(res, 404, { error: 'Dukaan nahi mili' });
   const next = addOneMonthToDate(shop.fee_due_date);
-  db.prepare('UPDATE shops SET fee_due_date = ? WHERE id = ?').run(next, shopId);
+  await db.prepare('UPDATE shops SET fee_due_date = ? WHERE id = ?').run(next, shopId);
   sendJSON(res, 200, { ok: true, fee_due_date: next });
 }
-function handleOwnerToggle(req, res, shopId) {
-  const shop = db.prepare('SELECT * FROM shops WHERE id = ?').get(shopId);
+async function handleOwnerToggle(req, res, shopId) {
+  const shop = await db.prepare('SELECT * FROM shops WHERE id = ?').get(shopId);
   if (!shop) return sendJSON(res, 404, { error: 'Dukaan nahi mili' });
   const next = shop.active ? 0 : 1;
-  db.prepare('UPDATE shops SET active = ? WHERE id = ?').run(next, shopId);
+  await db.prepare('UPDATE shops SET active = ? WHERE id = ?').run(next, shopId);
   sendJSON(res, 200, { ok: true, active: next });
 }
-function handleOwnerTotals(req, res) {
-  const fee = Number(db.prepare("SELECT value FROM settings WHERE key='fee_amount'").get().value);
-  const shopsCount = db.prepare('SELECT COUNT(*) AS c FROM shops').get().c;
-  const activeCount = db.prepare('SELECT COUNT(*) AS c FROM shops WHERE active = 1').get().c;
-  const custCount = db.prepare('SELECT COUNT(*) AS c FROM customers').get().c;
+async function handleOwnerTotals(req, res) {
+  const fee = Number((await db.prepare("SELECT value FROM settings WHERE key='fee_amount'").get()).value);
+  const shopsCount = (await db.prepare('SELECT COUNT(*) AS c FROM shops').get()).c;
+  const activeCount = (await db.prepare('SELECT COUNT(*) AS c FROM shops WHERE active = 1').get()).c;
+  const custCount = (await db.prepare('SELECT COUNT(*) AS c FROM customers').get()).c;
+  const stats = await allShopStats();
   let stuck = 0;
-  const shops = db.prepare('SELECT id FROM shops').all();
-  for (const s of shops) stuck += shopStats(s.id).stuck;
+  for (const st of stats.values()) stuck += st.stuck;
   sendJSON(res, 200, { shops: shopsCount, activeShops: activeCount, customers: custCount,
                        stuck, monthlyFeeIncome: activeCount * fee, fee_amount: fee });
 }
@@ -768,7 +833,7 @@ async function handleOwnerSettings(req, res) {
   const b = await readBody(req);
   const fee = Math.round(Number(b.fee_amount));
   if (!fee || fee < 0) return sendJSON(res, 400, { error: 'Fee ki rakam sahi likhein' });
-  db.prepare("UPDATE settings SET value = ? WHERE key = 'fee_amount'").run(String(fee));
+  await db.prepare("UPDATE settings SET value = ? WHERE key = 'fee_amount'").run(String(fee));
   sendJSON(res, 200, { ok: true, fee_amount: fee });
 }
 async function handleOwnerChangePassword(req, res, owner) {
@@ -779,16 +844,25 @@ async function handleOwnerChangePassword(req, res, owner) {
   if (!b.new_password || String(b.new_password).length < 4) {
     return sendJSON(res, 400, { error: 'Naya password kam az kam 4 harf ka rakhein' });
   }
-  db.prepare('UPDATE owner SET pass_hash = ? WHERE id = ?').run(hashPassword(b.new_password), owner.id);
+  await db.prepare('UPDATE owner SET pass_hash = ? WHERE id = ?').run(hashPassword(b.new_password), owner.id);
   sendJSON(res, 200, { ok: true });
 }
-function handleOwnerBackup(req, res) {
-  sendPdf(res, ownerPdfLines(), `qist-owner-report-${todayStr()}.pdf`);
+async function handleOwnerBackup(req, res) {
+  sendPdf(res, await ownerPdfLines(), `qist-owner-report-${todayStr()}.pdf`);
 }
-function handleOwnerBackupDb(req, res) {
+async function handleOwnerBackupDb(req, res) {
   const stamp = todayStr();
+  if (!db.isLocal) {
+    // Hosted (Turso) mode: poora data ek JSON file ki surat me download
+    const dump = await db.dump();
+    dump.created_at = new Date().toISOString();
+    const body = JSON.stringify(dump, null, 1);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': `attachment; filename="qist-backup-${stamp}.json"` });
+    return res.end(body);
+  }
   const dest = path.join(BACKUP_DIR, `qist-${stamp}.db`);
-  if (!fs.existsSync(dest)) db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
+  if (!fs.existsSync(dest)) await db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
   const data = fs.readFileSync(dest);
   res.writeHead(200, { 'Content-Type': 'application/octet-stream',
     'Content-Disposition': `attachment; filename="qist-backup-${stamp}.db"` });
@@ -815,8 +889,9 @@ function serveStatic(req, res, url) {
 }
 
 // ---------------------------------------------------------------- router
-const handler = async (req, res) => {
+const routeRequest = async (req, res) => {
   try {
+    await initDb();
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
     const m = req.method;
@@ -832,31 +907,31 @@ const handler = async (req, res) => {
       const s = getSession(req);
       if (!s) return sendJSON(res, 401, { error: 'Login nahi hai' });
       if (s.role === 'shop') {
-        const shop = db.prepare('SELECT id, name FROM shops WHERE id = ?').get(s.id);
+        const shop = await db.prepare('SELECT id, name FROM shops WHERE id = ?').get(s.id);
         return sendJSON(res, 200, { role: 'shop', shop });
       }
-      const owner = db.prepare('SELECT id, name FROM owner WHERE id = ?').get(s.id);
+      const owner = await db.prepare('SELECT id, name FROM owner WHERE id = ?').get(s.id);
       return sendJSON(res, 200, { role: 'owner', owner });
     }
 
     // Shop routes
     if (p.startsWith('/api/') && !p.startsWith('/api/owner/')) {
-      const shop = requireShop(req, res);
+      const shop = await requireShop(req, res);
       if (!shop) return;
-      if (p === '/api/home' && m === 'GET') return handleHome(req, res, shop);
-      if (p === '/api/late' && m === 'GET') return handleLate(req, res, shop);
-      if (p === '/api/customers' && m === 'GET') return handleCustomers(req, res, shop, url);
+      if (p === '/api/home' && m === 'GET') return await handleHome(req, res, shop);
+      if (p === '/api/late' && m === 'GET') return await handleLate(req, res, shop);
+      if (p === '/api/customers' && m === 'GET') return await handleCustomers(req, res, shop, url);
       if (p === '/api/customers' && m === 'POST') return await handleAddCustomer(req, res, shop);
       const custMatch = p.match(/^\/api\/customers\/(\d+)$/);
-      if (custMatch && m === 'GET') return handleCustomerFile(req, res, shop, Number(custMatch[1]));
+      if (custMatch && m === 'GET') return await handleCustomerFile(req, res, shop, Number(custMatch[1]));
       const payMatch = p.match(/^\/api\/customers\/(\d+)\/payments$/);
       if (payMatch && m === 'POST') return await handleAddPayment(req, res, shop, Number(payMatch[1]));
       const delMatch = p.match(/^\/api\/payments\/(\d+)$/);
-      if (delMatch && m === 'DELETE') return handleDeletePayment(req, res, shop, Number(delMatch[1]));
-      if (p === '/api/export/pdf' && m === 'GET') return handleShopPdf(req, res, shop);
+      if (delMatch && m === 'DELETE') return await handleDeletePayment(req, res, shop, Number(delMatch[1]));
+      if (p === '/api/export/pdf' && m === 'GET') return await handleShopPdf(req, res, shop);
       const photoMatch = p.match(/^\/api\/customers\/(\d+)\/photo\/(customer|item)$/);
-      if (photoMatch && m === 'GET') return handlePhotoGet(req, res, shop, Number(photoMatch[1]), photoMatch[2]);
-      if (photoMatch && m === 'DELETE') return handlePhotoDelete(req, res, shop, Number(photoMatch[1]), photoMatch[2]);
+      if (photoMatch && m === 'GET') return await handlePhotoGet(req, res, shop, Number(photoMatch[1]), photoMatch[2]);
+      if (photoMatch && m === 'DELETE') return await handlePhotoDelete(req, res, shop, Number(photoMatch[1]), photoMatch[2]);
       const photoPost = p.match(/^\/api\/customers\/(\d+)\/photo$/);
       if (photoPost && m === 'POST') return await handlePhotoPost(req, res, shop, Number(photoPost[1]));
       return sendJSON(res, 404, { error: 'Route nahi mila' });
@@ -864,19 +939,19 @@ const handler = async (req, res) => {
 
     // Owner routes
     if (p.startsWith('/api/owner/')) {
-      const owner = requireOwner(req, res);
+      const owner = await requireOwner(req, res);
       if (!owner) return;
-      if (p === '/api/owner/shops' && m === 'GET') return handleOwnerShops(req, res);
+      if (p === '/api/owner/shops' && m === 'GET') return await handleOwnerShops(req, res);
       if (p === '/api/owner/shops' && m === 'POST') return await handleOwnerAddShop(req, res);
-      if (p === '/api/owner/totals' && m === 'GET') return handleOwnerTotals(req, res);
+      if (p === '/api/owner/totals' && m === 'GET') return await handleOwnerTotals(req, res);
       if (p === '/api/owner/settings' && m === 'POST') return await handleOwnerSettings(req, res);
       if (p === '/api/owner/change-password' && m === 'POST') return await handleOwnerChangePassword(req, res, owner);
-      if (p === '/api/owner/backup' && m === 'GET') return handleOwnerBackup(req, res);
-      if (p === '/api/owner/backup-db' && m === 'GET') return handleOwnerBackupDb(req, res);
+      if (p === '/api/owner/backup' && m === 'GET') return await handleOwnerBackup(req, res);
+      if (p === '/api/owner/backup-db' && m === 'GET') return await handleOwnerBackupDb(req, res);
       const feeMatch = p.match(/^\/api\/owner\/shops\/(\d+)\/fee-paid$/);
-      if (feeMatch && m === 'POST') return handleOwnerFeePaid(req, res, Number(feeMatch[1]));
+      if (feeMatch && m === 'POST') return await handleOwnerFeePaid(req, res, Number(feeMatch[1]));
       const togMatch = p.match(/^\/api\/owner\/shops\/(\d+)\/toggle$/);
-      if (togMatch && m === 'POST') return handleOwnerToggle(req, res, Number(togMatch[1]));
+      if (togMatch && m === 'POST') return await handleOwnerToggle(req, res, Number(togMatch[1]));
       return sendJSON(res, 404, { error: 'Route nahi mila' });
     }
 
@@ -886,6 +961,21 @@ const handler = async (req, res) => {
     console.error(e);
     sendJSON(res, 500, { error: 'Server me kharabi — dobara koshish karein' });
   }
+};
+
+// API requests ek ek karke chalti hain — hisaab (khas tor par BEGIN..COMMIT
+// wale hisse) kabhi aapas me ulajh nahi sakte, chahe database local ho ya hosted.
+let apiTail = Promise.resolve();
+function apiLock(fn) {
+  const run = apiTail.then(fn, fn);
+  apiTail = run.then(() => {}, () => {});
+  return run;
+}
+const handler = async (req, res) => {
+  let p = '';
+  try { p = new URL(req.url, 'http://x').pathname; } catch {}
+  if (p.startsWith('/api/')) return apiLock(() => routeRequest(req, res));
+  return routeRequest(req, res);
 };
 
 // Asal server sirf tab chale jab file seedhi chalayi jaye (node server.js).
