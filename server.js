@@ -143,6 +143,57 @@ db.exec(`
   }
 }
 
+// Demo dukaan seed — SIRF Vercel demo par (VERCEL env) ya QW_DEMO_SEED=1 par.
+// Vercel par data reset hota rehta hai, is liye demo dukaan har start par khud
+// ban jati hai taake landing page wala demo login hamesha chale. Asal client
+// server par ye NAHI banti (wahan sirf asal dukaanain hoti hain).
+if (process.env.VERCEL === '1' || process.env.QW_DEMO_SEED === '1') {
+  const DEMO_MOBILE = '03289507102';
+  const demoRow = db.prepare('SELECT id FROM shops WHERE mobile = ?').get(DEMO_MOBILE);
+  if (!demoRow) {
+    const now = new Date();
+    const iso = d => d.toISOString().slice(0, 10);
+    const addM = (d, m) => { const x = new Date(d); x.setMonth(x.getMonth() + m); return x; };
+    const ym = d => iso(d).slice(0, 7);
+    const day = Math.min(now.getDate(), 28);
+    const shopId = db.prepare('INSERT INTO shops(name, owner_name, mobile, pass_hash, fee_due_date, active, created_at) VALUES (?,?,?,?,?,1,?)')
+      .run('Messam Mobile Zone (Demo)', 'Messam Abbas', DEMO_MOBILE, hashPassword('1234'), iso(addM(now, 12)), iso(now)).lastInsertRowid;
+    const insCust = db.prepare(`INSERT INTO customers(shop_id, name, mobile, cnic, address, guarantor_name,
+      guarantor_mobile, item_name, imei, total_price, advance, months, qist_day,
+      first_month, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    const insInst = db.prepare('INSERT INTO installments(customer_id, shop_id, seq, due_date, amount) VALUES (?,?,?,?,?)');
+    const insPay = db.prepare('INSERT INTO payments(customer_id, shop_id, amount, paid_at, created_at) VALUES (?,?,?,?,?)');
+    const insAlloc = db.prepare('INSERT INTO allocations(payment_id, installment_id, amount) VALUES (?,?,?)');
+    const addDemoCustomer = (c, startOffset, pays) => {
+      const cid = insCust.run(shopId, c.name, c.mobile, '', '', c.gname || '', c.gmobile || '',
+        c.item, c.imei || '', c.total, c.advance, c.months, day, ym(addM(now, startOffset)), iso(now)).lastInsertRowid;
+      const balance = c.total - c.advance;
+      const base = Math.floor(balance / c.months);
+      const insts = [];
+      for (let i = 0; i < c.months; i++) {
+        const amount = i < c.months - 1 ? base : balance - base * (c.months - 1);
+        const due = `${ym(addM(now, startOffset + i))}-${String(day).padStart(2, '0')}`;
+        insts.push({ id: insInst.run(cid, shopId, i + 1, due, amount).lastInsertRowid, left: amount });
+      }
+      for (const pay of pays) {
+        const pid = insPay.run(cid, shopId, pay.amount, pay.date, pay.date).lastInsertRowid;
+        let left = pay.amount;
+        for (const inst of insts) {
+          if (left <= 0) break;
+          const take = Math.min(left, inst.left);
+          if (take > 0) { insAlloc.run(pid, inst.id, take); inst.left -= take; left -= take; }
+        }
+      }
+    };
+    addDemoCustomer({ name: 'Ahmed Raza', mobile: '03001110001', item: 'Samsung A55', total: 30000, advance: 6000, months: 6 },
+      -5, [-5, -4, -3, -2].map(o => ({ amount: 4000, date: iso(addM(now, o)) })));
+    addDemoCustomer({ name: 'Bilal Ahmed', mobile: '03004440004', item: 'iPhone 12', imei: '359876543210123', gname: 'Shahid Iqbal', gmobile: '03004440009', total: 150000, advance: 30000, months: 8 },
+      -2, [{ amount: 15000, date: iso(addM(now, -2)) }, { amount: 5000, date: iso(addM(now, -1)) }]);
+    addDemoCustomer({ name: 'Sana Tariq', mobile: '03007770007', item: 'Infinix Note 40', total: 48000, advance: 8000, months: 5 }, -1, []);
+    console.log('[Qist Wasooli] Demo dukaan tayyar: ' + DEMO_MOBILE + ' / 1234');
+  }
+}
+
 
 // ---------------------------------------------------------------- PDF (bina library ke — asal khulne wali PDF)
 const fmt = n => 'Rs ' + Number(n || 0).toLocaleString('en-US');
