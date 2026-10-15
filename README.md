@@ -126,3 +126,10 @@ tests/run-tests.js   — 14 teston ki report
 - **Khud bakhud PDF:** Roz ke backup ke sath har dukaan ka PDF bhi `data/backups/pdf-<tareekh>/` me khud ban jata hai — app ko kuch ho jaye to parhne wala record mehfooz rehta hai.
 - **Har customer ka saaf hisaab:** Customer File me "Is Mahinay Ka Hisaab" wala card har customer ka alag hisaab dikhata hai — har mahine ki qist kitni hai, is mahine ki qist mili ya nahi, kul kitni qistein baqi hain.
 - **Photo:** Customer File me customer ki photo aur cheez (item) ki photo lagayi ja sakti hai, badli aur hatayi bhi ja sakti hai. Photo sirf usi dukaan ko dikhti hai jis ka customer hai.
+
+## Data storage (2026-10-15 se)
+
+- **Vercel par:** data **Turso** (hosted SQLite) me rehta hai — env `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` (Vercel project se jude hue, free Starter plan: 5GB). Site redeploy ho ya band ho, data mehfooz rehta hai.
+- **Client ke apne server par:** wahi purana tareeqa — local `data/qist.db` file (koi env na ho to yehi chalta hai).
+- **Backup:** Owner dashboard se database download (hosted mode me JSON, local mode me .db file). Is ke ilawa Turso apni copy rakhta hai.
+- **Dukaan hatana:** Owner API `DELETE /api/owner/shops/<id>` — dukaan ka saara data sath saaf ho jata hai.
