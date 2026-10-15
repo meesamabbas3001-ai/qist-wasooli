@@ -164,13 +164,15 @@ const ym = offset => {
     feeOk && blockedLogin && reopened && dataIntact, `fee ${before.fee_due_date} -> ${expFee}`);
 
   // --- Test 12: mobile design (viewport + chhoti screen par side-scroll nahi)
-  const html = await (await fetch(BASE + '/')).text();
+  // ('/' ab landing page hai — app ka design '/index.html' par check hota hai)
+  const html = await (await fetch(BASE + '/index.html')).text();
   check(12, 'Mobile design — viewport, bare button, side-scroll nahi (design check)',
     html.includes('viewport') && html.includes('bottomnav'), 'mobile-first layout, max-width 640');
 
-  // --- Test 13: sust internet par tez khule (pehli screen ka size + waqt)
+  // --- Test 13: sust internet par tez khule (APP ki pehli screen ka size + waqt;
+  // '/' ab public landing page hai, app '/index.html' par hai — is liye wahi mapna hai)
   const t0 = Date.now();
-  const home = await (await fetch(BASE + '/')).text();
+  const home = await (await fetch(BASE + '/index.html')).text();
   const ms = Date.now() - t0;
   check(13, 'Pehli screen tez khule (koi bahari font/library nahi)', ms < 3000 && home.length < 30000,
     `${ms}ms, ${(home.length / 1024).toFixed(1)}KB HTML`);

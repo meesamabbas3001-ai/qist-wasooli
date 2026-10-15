@@ -738,7 +738,8 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascri
   '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
 function serveStatic(req, res, url) {
   let p = url.pathname;
-  if (p === '/') p = '/index.html';
+  if (p === '/') p = '/home.html';
+  if (p === '/app') p = '/index.html';
   if (p === '/owner') p = '/owner.html';
   const file = path.join(PUBLIC_DIR, path.normalize(p).replace(/^([/\\])+/, ''));
   if (!file.startsWith(PUBLIC_DIR) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
