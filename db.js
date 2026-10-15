@@ -71,7 +71,7 @@ class LocalDb {
       out.tables[t] = rows.map(row => {
         const o = {};
         for (const [k, v] of Object.entries(row)) {
-          o[k] = Buffer.isBuffer(v) ? { $blob: v.toString('base64') } : v;
+          o[k] = (Buffer.isBuffer(v) || v instanceof Uint8Array) ? { $blob: Buffer.from(v).toString('base64') } : v;
         }
         return o;
       });
@@ -187,7 +187,7 @@ class TursoDb {
       out.tables[t] = rows.map(row => {
         const o = {};
         for (const [k, v] of Object.entries(row)) {
-          o[k] = Buffer.isBuffer(v) ? { $blob: v.toString('base64') } : v;
+          o[k] = (Buffer.isBuffer(v) || v instanceof Uint8Array) ? { $blob: Buffer.from(v).toString('base64') } : v;
         }
         return o;
       });
