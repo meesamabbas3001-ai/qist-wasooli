@@ -381,7 +381,8 @@ async function handlePhotoGet(req, res, shop, id, kind) {
   const ph = await db.prepare('SELECT data FROM photos WHERE customer_id = ? AND kind = ?').get(id, kind);
   if (!ph) return sendJSON(res, 404, { error: 'Photo nahi hai' });
   res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=120' });
-  res.end(Buffer.isBuffer(ph.data) ? ph.data : Buffer.from(String(ph.data), 'base64'));
+  res.end((Buffer.isBuffer(ph.data) || ph.data instanceof Uint8Array)
+    ? Buffer.from(ph.data) : Buffer.from(String(ph.data), 'base64'));
 }
 async function handlePhotoDelete(req, res, shop, id, kind) {
   if (!await findOwnCustomer(shop, id)) return sendJSON(res, 404, { error: 'Customer nahi mila' });
