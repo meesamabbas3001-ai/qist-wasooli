@@ -920,6 +920,17 @@ function serveStatic(req, res, url) {
       body = Buffer.from(html, 'utf8');
     } catch (e) { /* SEO files na hon to asal page hi serve hoga */ }
   }
+  if (ext === '.html') {
+    // Google Analytics (GA4) — snippet alag file (ga-snippet.html) me hai;
+    // file mojood ho to har HTML page ke head me jor do, warna kuch nahi.
+    try {
+      const ga = fs.readFileSync(path.join(PUBLIC_DIR, 'ga-snippet.html'), 'utf8');
+      const html = body.toString('utf8');
+      if (!html.includes('googletagmanager.com/gtag')) {
+        body = Buffer.from(html.replace('</head>', ga + '\n</head>'), 'utf8');
+      }
+    } catch (e) { /* GA snippet na ho to page waisa hi rahega */ }
+  }
   res.end(body);
 }
 
