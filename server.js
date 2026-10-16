@@ -905,7 +905,22 @@ function serveStatic(req, res, url) {
   const ext = path.extname(file);
   res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream',
     'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600' });
-  res.end(fs.readFileSync(file));
+  let body = fs.readFileSync(file);
+  if (p === '/home.html') {
+    // Landing page me SEO head (canonical/OG/schema) aur FAQ section yahan
+    // jorte hain — home.html bari file hai, is liye ye hisse alag chhoti
+    // files (seo-head.html, faq-section.html) me rakhe hain.
+    try {
+      let html = body.toString('utf8');
+      const seoHead = fs.readFileSync(path.join(PUBLIC_DIR, 'seo-head.html'), 'utf8');
+      const faqSection = fs.readFileSync(path.join(PUBLIC_DIR, 'faq-section.html'), 'utf8');
+      html = html.replace('</head>', seoHead + '\n</head>');
+      html = html.replace('<section>\n  <div class="wrap">\n    <div class="demo">',
+        faqSection + '\n<section>\n  <div class="wrap">\n    <div class="demo">');
+      body = Buffer.from(html, 'utf8');
+    } catch (e) { /* SEO files na hon to asal page hi serve hoga */ }
+  }
+  res.end(body);
 }
 
 // ---------------------------------------------------------------- router
