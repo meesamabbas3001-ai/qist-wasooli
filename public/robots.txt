@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /$
+Disallow: /app
+Disallow: /owner
+Disallow: /api/
+
+Sitemap: https://qist-wasooli.vercel.app/sitemap.xml
